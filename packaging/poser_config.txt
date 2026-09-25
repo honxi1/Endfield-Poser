@@ -1,0 +1,14 @@
+# Endfield Poser config (key=value)
+# 呼出/隐藏面板：L（不用 F 键——XXMI/3DMigoto 会轮询 F11/F12，连 Ctrl+F12 也会触发它们的动作）
+gui_toggle_key=L
+# 冻结 / 解冻：P
+freeze_key=P
+# 1 = 覆盖层常驻 + 真穿透（推荐）；0 = 按住 Alt 才显示面板
+click_through=1
+# 0 = 自动（检测到 XXMI/3DMigoto 的 d3d11.dll 时改用分层窗口）；1 = 强制 DComp；2 = 强制分层窗口
+overlay_mode=0
+# 分层窗口路径的呈现帧率上限（0=不限）。装了较多 XXMI mod 的机器上，
+# 面板显示时如果觉得游戏变卡，可降到 30（面板本身刷新率会跟着降，但更省）。
+overlay_fps=60
+# 姿态预设目录（相对游戏根目录，或绝对路径）
+default_pose_dir=plugin\poses

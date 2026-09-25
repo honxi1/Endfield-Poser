@@ -1,0 +1,166 @@
+﻿$ErrorActionPreference = 'Stop'
+
+# Endfield Poser - cmake-free MSVC build.
+#
+# Why this exists:
+#   * This machine has no cmake and no installed Windows SDK, but does have
+#     VS2022 VC++ tools. We supply Windows SDK headers/libs from NuGet:
+#       - deps\winsdk    (Microsoft.Windows.SDK.CPP  -> c\Include\<ver>\{um,shared,ucrt})
+#       - deps\winsdkcpp (Microsoft.Windows.SDK.CPP.x64 -> c\um\x64, c\ucrt\x64)
+#   * vcvars64.bat sets the MSVC toolchain (cl on PATH, VC include/lib), but
+#     NOT the Windows SDK paths, so we append them explicitly below.
+#
+# Produces:
+#   plugin\poser.dll            (main plugin, self-initializing)
+#   plugin\d3dcompiler_47.dll   (DX proxy loader, forwards to System32)
+#   plugin\vulkan-1.dll         (Vulkan proxy loader, forwards to System32)
+# Then compiles + runs the math unit tests with cl.
+
+$root = Join-Path $PSScriptRoot '..'
+Set-Location $root
+
+# ---- 1) Locate MSVC toolchain (vcvars64.bat) ----
+# Probe the usual install roots first (any edition / any VS version folder,
+# including Insiders + BuildTools), then fall back to vswhere.
+$vcvars = $null
+$vsRoots = @(
+  'C:\Program Files\Microsoft Visual Studio',
+  'C:\Program Files (x86)\Microsoft Visual Studio'
+)
+foreach ($vsRoot in $vsRoots) {
+  if (-not (Test-Path $vsRoot)) { continue }
+  $hit = Get-ChildItem -Path (Join-Path $vsRoot '*\*\VC\Auxiliary\Build\vcvars64.bat') -ErrorAction SilentlyContinue |
+    Sort-Object FullName -Descending | Select-Object -First 1
+  if ($hit) { $vcvars = $hit.FullName; break }
+}
+if (-not $vcvars) {
+  $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+  if (Test-Path $vswhere) {
+    $vsDir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($vsDir) {
+      $candidate = Join-Path $vsDir 'VC\Auxiliary\Build\vcvars64.bat'
+      if (Test-Path $candidate) { $vcvars = $candidate }
+    }
+  }
+}
+if (-not $vcvars) { throw "vcvars64.bat not found (Visual Studio C++ tools missing?)" }
+Write-Host "Using $vcvars"
+
+# ---- 2) Locate Windows SDK headers/libs (NuGet, in deps) ----
+$winsdkHdr = Join-Path $root 'deps\winsdk\c\Include'
+$sdkVerDir = Get-ChildItem $winsdkHdr -Directory -ErrorAction SilentlyContinue |
+  Sort-Object Name -Descending | Select-Object -First 1
+if (-not $sdkVerDir) { throw "Windows SDK headers not found under deps\winsdk (run tools\setup_winsdk.ps1)" }
+
+$sdkInc = @(
+  (Join-Path $sdkVerDir.FullName 'um'),
+  (Join-Path $sdkVerDir.FullName 'shared'),
+  (Join-Path $sdkVerDir.FullName 'ucrt')
+) | Where-Object { Test-Path $_ }
+if ($sdkInc.Count -lt 3) { throw "SDK include dirs incomplete under $($sdkVerDir.FullName)" }
+
+$sdkLibBase = Join-Path $root 'deps\winsdkcpp\c'
+$sdkLibDirUm   = Join-Path $sdkLibBase 'um\x64'
+$sdkLibDirUcrt = Join-Path $sdkLibBase 'ucrt\x64'
+if (-not (Test-Path $sdkLibDirUm) -or -not (Test-Path $sdkLibDirUcrt)) {
+  throw "SDK lib dirs not found under deps\winsdkcpp (run tools\setup_winsdk.ps1)"
+}
+
+New-Item -ItemType Directory -Force -Path 'plugin' | Out-Null
+New-Item -ItemType Directory -Force -Path 'build\tests' | Out-Null
+New-Item -ItemType Directory -Force -Path 'build\obj' | Out-Null
+
+$sdkIncFlags = ($sdkInc | ForEach-Object { "/I $_" }) -join ' '
+$sdkLibFlags = "/LIBPATH:$sdkLibDirUm /LIBPATH:$sdkLibDirUcrt"
+
+$common = "/nologo /std:c++17 /O2 /MD /EHa /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS $sdkIncFlags"
+$inc    = '/I deps /I deps\imgui /I deps\imguizmo /I deps\minhook_lib\include /I deps\json /I src'
+
+function Invoke-Cl([string]$CompileArgs) {
+  # Run vcvars64 and cl in ONE cmd session so INCLUDE/LIB/PATH apply to cl.
+  $cmdLine = 'call "' + $vcvars + '" >nul 2>&1 && cl ' + $CompileArgs
+  cmd /d /c $cmdLine
+  if ($LASTEXITCODE -ne 0) { throw "cl failed: $CompileArgs" }
+}
+
+Write-Host '=== Compiling version resource ==='
+# cl 不处理 .rc；必须先用 rc.exe 编成 .res，再交给链接器
+# （Applepie Manager 用 GetFileVersionInfoA 读它显示插件版本）
+# 一律用绝对路径：Set-Location 只改 PowerShell 的 location，子进程 cmd 的工作目录
+# 未必跟着变（vcvars 自己也可能切目录）。相对路径会让 rc 把 .res 写到别处，
+# 而 rc 仍返回 0 —— 表现就是"DLL 版本号停在旧值"，非常难查。实测踩过。
+$rcRes = Join-Path $root 'build\obj\poser.res'
+$rcSrc = Join-Path $root 'src\poser.rc'
+$rcInc = Join-Path $root 'src'
+$rcCmdLine = 'call "' + $vcvars + '" >nul 2>&1 && rc /nologo /I "' + $rcInc +
+             '" /fo "' + $rcRes + '" "' + $rcSrc + '"'
+# rc.exe 会按"输出 vs .rc 文件"的时间戳做增量判断，而版本号在 version.h 里——
+# 只改 version.h 时它不会重编，导致 DLL 版本号停在旧值。先删掉旧 .res 强制重编。
+# 删不掉就必须立刻报错：静默失败会让 rc 跳过，最后发出一个版本号不对的包。
+Remove-Item -LiteralPath $rcRes -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $rcRes) {
+  throw "could not remove $rcRes -- rc would skip and keep the old version resource"
+}
+cmd /d /c $rcCmdLine
+if ($LASTEXITCODE -ne 0) { throw "rc failed: $rcSrc" }
+if (-not (Test-Path -LiteralPath $rcRes)) {
+  throw "rc reported success but $rcRes is missing (working directory mismatch?)"
+}
+
+Write-Host '=== Building poser.dll ==='
+$poserArgs = "$common /DAPPLEPIE_PLUGIN_IMPL $inc /LD " +
+  'src\poser.cpp ' +
+  'build\obj\poser.res ' +
+  'deps\imgui\imgui.cpp deps\imgui\imgui_draw.cpp deps\imgui\imgui_tables.cpp deps\imgui\imgui_widgets.cpp ' +
+  'deps\imgui\imgui_impl_dx11.cpp deps\imgui\imgui_impl_win32.cpp deps\imguizmo\ImGuizmo.cpp ' +
+  '/Fe:plugin\poser.dll ' +
+  "/link /NODEFAULTLIB:LIBCMT /MAP:plugin\poser.map $sdkLibFlags d3d11.lib dxgi.lib d3dcompiler.lib dwmapi.lib ole32.lib deps\minhook_lib\lib\libMinHook.x64.lib"
+Invoke-Cl $poserArgs
+
+# 版本资源校验：rc 跳过 / .res 陈旧 / 链接缓存都会在这里现形。
+# 发版前这一步能挡住"包名是 0.3.6、DLL 里写 0.3.5"这种错（Applepie Manager 会读它）。
+$vh = Get-Content 'src\core\version.h' -Raw
+$expectVer = '{0}.{1}.{2}' -f `
+  ([regex]::Match($vh, 'POSER_VERSION_MAJOR\s+(\d+)').Groups[1].Value), `
+  ([regex]::Match($vh, 'POSER_VERSION_MINOR\s+(\d+)').Groups[1].Value), `
+  ([regex]::Match($vh, 'POSER_VERSION_PATCH\s+(\d+)').Groups[1].Value)
+$actualVer = (Get-Item 'plugin\poser.dll').VersionInfo.FileVersion
+if ($actualVer -ne $expectVer) {
+  throw "poser.dll reports version '$actualVer' but src\core\version.h says '$expectVer' (stale .res / rc skipped?)"
+}
+Write-Host "Version resource OK: $actualVer"
+
+Write-Host ''
+Write-Host '=== Building d3dcompiler_47.dll (proxy) ==='
+$proxyArgs = "$common /LD src\core\proxy_d3dcompiler.cpp /Fe:plugin\d3dcompiler_47.dll /link $sdkLibFlags"
+Invoke-Cl $proxyArgs
+
+Write-Host ''
+Write-Host '=== Building vulkan-1.dll (proxy) ==='
+$vulkanArgs = "$common /LD src\core\proxy_vulkan_full.cpp /Fe:plugin\vulkan-1.dll /link $sdkLibFlags"
+Invoke-Cl $vulkanArgs
+
+Write-Host ''
+Write-Host '=== Running math unit tests (MSVC) ==='
+$tests = @(
+  @{ Name = 'test_quat';      Src = 'tests\test_quat.cpp' },
+  @{ Name = 'test_ik';        Src = 'tests\test_ik.cpp' },
+  @{ Name = 'test_pose_file'; Src = 'tests\test_pose_file.cpp' }
+)
+foreach ($t in $tests) {
+  Invoke-Cl "$common $inc $($t.Src) /Fe:build\tests\$($t.Name).exe /link $sdkLibFlags"
+  & ".\build\tests\$($t.Name).exe"
+  if ($LASTEXITCODE -ne 0) { throw "test $($t.Name) failed with exit $LASTEXITCODE" }
+}
+
+Write-Host ''
+Write-Host '=== Build OK ==='
+Write-Host '  plugin\poser.dll'
+Write-Host '  plugin\d3dcompiler_47.dll'
+Write-Host '  plugin\vulkan-1.dll'
+Get-ChildItem 'plugin' -Include *.lib,*.exp -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Write-Host ''
+Write-Host 'Deploy:'
+Write-Host '  copy plugin\d3dcompiler_47.dll -> game dir   (overwrites the game'"'"'s own)'
+Write-Host '  copy plugin\vulkan-1.dll         -> game dir   (only if game runs Vulkan; can place both)'
+Write-Host '  copy plugin\poser.dll          -> game dir\plugin\'

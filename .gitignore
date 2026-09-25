@@ -1,0 +1,23 @@
+build/
+plugin/
+debug/
+build/
+plugin/poser.dll
+plugin/d3dcompiler_47.dll
+plugin/*.lib
+plugin/*.exp
+deps/winsdk/
+deps/winsdkcpp/
+tools/zhipu_api_key.txt
+*.obj
+*.pdb
+__pycache__/
+
+# 内部文档与笔记：只留本地，不进公开仓库
+.internal/
+AGENT.md
+docs/task-state.md
+docs/build-environment.md
+docs/arp-ikfk-study.md
+docs/blender-bridge.md
+docs/superpowers/

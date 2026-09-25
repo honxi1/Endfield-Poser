@@ -1,0 +1,41 @@
+Endfield Poser —— 第三方来源与许可声明
+=========================================
+
+本文件列出的内容均为**许可合规所需的署名**。本项目与下列作者 / 项目
+**没有隶属、赞助或背书关系**，也不代表他们认可本项目。
+
+1) Sasye/EIEM（AGPL-3.0）
+   https://github.com/Sasye/EIEM
+
+   本项目 `src/core/` 下的若干文件（`base.h`、`il2cpp_api.h`、`proxy_d3dcompiler.cpp`、
+   `proxy_vulkan_full.cpp`、`gui_overlay.h`、`game_hooks.h`）由该项目的实现精简 / 改写而来；
+   `src/` 中的 `AP_*` 导出沿用该项目的协议定义；`README.md` 的《用户协议与免责声明》
+   章节结构与措辞参考了该项目的 README。其余文件为本项目独立实现。
+
+   **署名只为满足开源许可，不表示任何其他关系**：
+     - 上游项目与本项目是相互独立的项目，其作者未参与本项目，也未对本项目作出任何认可或背书；
+     - 本项目的代码、文档与发布包由本项目作者独立维护，**与上游项目及其作者无关**；
+       相关的责任范围与免责条款见仓库 README 的《用户协议与免责声明》；
+     - 本项目的使用条款、免责声明与内容合规要求**只约束本项目**，不代表也不适用于上游项目；
+     - 使用本项目遇到问题时**请不要联系上游项目的作者**，请通过本仓库 issue 或文末邮箱反馈。
+
+   因为包含上述衍生内容，**本仓库整体按 AGPL-3.0 发布**（见 LICENSE）。
+   修改这些文件时请保留文件头部的来源声明，并继续以 AGPL-3.0 分发。
+
+2) Sasye/ApplepieManager（AGPL-3.0）
+   https://github.com/Sasye/ApplepieManager
+
+   本项目不包含其代码，仅与其插件管理协议保持兼容。
+
+3) 第三方依赖（源码/静态库自包含在 `deps/`，运行时不联网）
+
+   - Dear ImGui（MIT）                https://github.com/ocornut/imgui
+   - ImGuizmo 1.83（MIT）             https://github.com/CedricGuillemet/ImGuizmo
+   - MinHook（BSD-2-Clause）          https://github.com/TsudaKageyu/minhook
+   - nlohmann/json（MIT）             https://github.com/nlohmann/json
+
+   其中 imgui 与 MinHook 的源码/静态库取自上述上游仓库中的同版本副本（许可同上）。
+   各依赖的许可全文见 `deps/<name>/LICENSE*`。
+
+——
+完整免责声明、内容合规与行为约束见仓库 README.md。
