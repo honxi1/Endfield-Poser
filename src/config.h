@@ -7,23 +7,24 @@
 
 void Log(const char *fmt, ...);
 
-// 呼出/隐藏 GUI：默认 L。
-// 为什么不用 F11/F12（连 Ctrl+F12 也不行）：XXMI/3DMigoto 是**直接轮询 F11/F12 的
-// 按键状态**，你按 Ctrl+F11 它照样会触发自己那份 —— 只有"根本不碰 F 键"才躲得掉。
-// 用字母的代价：游戏内文本框/聊天里打字会误触发（插件自己面板的输入框已做屏蔽）。
+// 呼出/隐藏 GUI：默认 L（字母键）。选字母是为了避开和其它插件容易冲突的按键；
+// 代价是游戏内文本框/聊天里打字会误触发（插件自己面板的输入框已做屏蔽）。
 static int g_guiToggleVK = 'L';
 static bool g_guiToggleCtrl = false;    // 是否要求按住 Ctrl
 static int g_screenshotVK = VK_F8;      // 截图
 // 冻结 / 解冻：默认 P
 static int g_freezeVK = 'P';
 static bool g_freezeCtrl = false;
-static bool g_hotkeyConflict = false;   // 配置里还留着易冲突的 F10~F12 → 面板给提示
+static bool g_hotkeyConflict = false;   // 配置里还留着易冲突的裸功能键 → 面板给提示
 static char g_hotkeyConflictMsg[192] = "";
 static char g_hotkeyRiskyMsg[192] = ""; // 绑成单键（字母/数字…）→ 打字会误触发，提示
 static char g_defaultPoseDir[MAX_PATH] = "";
 // click_through=1：覆盖层常驻显示，用 WS_EX_LAYERED|TRANSPARENT 做真穿透；
 // 按住 Alt 时才取消穿透、由面板吃鼠标。默认 0 = 按住 Alt 才显示覆盖层。
 static bool g_clickThrough = true; // 默认常驻 + 真穿透（实测手感更好）
+// ik_enabled=1：打开实验性的 IK 控制器（编辑器的"控制器"面板）。
+// 该功能尚未完成（能选中/拖动手柄，骨骼跟随还没做好），默认关闭；面板里也能勾。
+static bool g_ikEnabled = false;
 // overlay_mode：0=auto（检测到 XXMI/3DMigoto 的 d3d11.dll 时用分层窗口，否则 DComp）
 //               1=强制 DComp   2=强制分层窗口（UpdateLayeredWindow，兼容性最好）
 static int g_overlayMode = 0;
@@ -63,7 +64,7 @@ static int ParseVK(const char *s, int fallback) {
     if (p[0] >= 'a' && p[0] <= 'z') return p[0] - 'a' + 'A';
     if (p[0] >= '0' && p[0] <= '9') return p[0];
   }
-  // 符号名（大小写不敏感）：VK_F12 / F12 / VK_INSERT / INSERT ...
+  // 符号名（大小写不敏感）：VK_INSERT / INSERT / L / 0x2D ...
   static const struct {
     const char *name;
     int vk;
@@ -125,7 +126,7 @@ static void StripBom(char *line) {
   }
 }
 
-// 解析热键：支持 "CTRL+F11" / "CTRL-F11" / "F11" / "0x7B"，大小写不敏感。
+// 解析热键：支持 "CTRL+Insert" / "CTRL-Insert" / "Insert" / "0x2D"，大小写不敏感。
 // 修饰键写在前面，返回时把主键写进 *vkOut、是否需要 Ctrl 写进 *ctrlOut。
 static void ParseHotkey(const char *s, int *vkOut, bool *ctrlOut, int fallbackVk,
                         bool fallbackCtrl) {
@@ -174,7 +175,7 @@ static bool IsSafeStandaloneKey(int vk) {
   }
 }
 
-// 撞键后两边同时响应（表现为"F11 有时不灵""F12 触发了别的东西"）。
+// 撞键后两边同时响应（表现为"按键有时不灵""触发了别的东西"）。
 // 这里只在配置里还留着这些键时给一条提示，不擅自改用户的配置。
 static void CheckHotkeyConflicts() {
   // 1) 单键（字母/数字/空格这类"会打字"的键）：不算错，但打字时会误触发，提示一下
@@ -196,7 +197,7 @@ static void CheckHotkeyConflicts() {
              "\uff08\u5efa\u8bae\u6309\u4f4f Ctrl \u91cd\u8bbe\uff09",
              riskWhich, riskName);
   }
-  // 2) 裸 F10~F12：和 XXMI/3DMigoto、Steam 截图撞键（只在真装了 XXMI 时提示）
+  // 2) 裸功能键：容易和其它工具 / 截图功能撞键（只在真检测到第三方 dll 时提示）
   char b1[32] = {}, b2[32] = {};
   const char *n1 = VkName(g_guiToggleVK, b1, sizeof(b1));
   const char *n2 = VkName(g_freezeVK, b2, sizeof(b2));
@@ -218,7 +219,7 @@ static void CheckHotkeyConflicts() {
            "\u300c\u5feb\u6377\u952e\u300d\u91cc\u6539\u6210 CTRL+%s",
            bad, bad);
   Log("[CFG] WARN: hotkey '%s' may conflict with XXMI/3DMigoto or Steam "
-      "(F10-F12); change gui_toggle_key/freeze_key in poser_config.txt",
+      "screenshot; change gui_toggle_key/freeze_key in poser_config.txt",
       bad);
 }
 
@@ -287,12 +288,11 @@ static void AppendConfigLine(const char *line) {
   fclose(f);
 }
 
-// 一次性迁移老默认热键：旧版本默认 gui_toggle_key=VK_F12 / freeze_key=VK_F11，
-// 而 F11/F12 会被 XXMI/3DMigoto、Steam 截图占用（撞键），0.3.3 起默认改成 L / P。
-// 但安装向导**不会覆盖已有配置**（那是为了防止重置用户自定的热键），于是老用户升级后
-// 拿到的还是 F12/F11 —— 反馈"按 L 呼不出面板"就是这个原因。
-// 这里只迁移"值正好等于旧默认"的那一项，且写一个标记行，之后不再重复迁移
-// （用户要是把键改回 F12，标记在，插件就不会再动它）。
+// 一次性迁移老默认热键：旧版本默认占用两个功能键，会和其它插件 / 截图功能撞键，
+// 0.3.3 起默认改成 L / P。但安装向导**不会覆盖已有配置**（防止重置用户自定的热键），
+// 于是老用户升级后拿到的还是旧值 —— 反馈"按 L 呼不出面板"就是这个原因。
+// 这里只迁移"值正好等于旧默认键"的那一项，且写一个标记行，之后不再重复迁移
+// （用户要是自己改回旧键，标记在，插件就不会再动它）。
 static void MigrateLegacyHotkeys() {
   const char *path = "plugin\\poser_config.txt";
   static char lines[80][256];
@@ -350,10 +350,10 @@ static void MigrateLegacyHotkeys() {
     g_freezeCtrl = false;
     SaveHotkeyConfig("freeze_key", 'P', false);
   }
-  AppendConfigLine("# hotkey-migrated: F12/F11 -> L/P (XXMI/3DMigoto polls the bare "
-                   "F keys; put your own value back here if you prefer it)\n");
-  Log("[CFG] migrated legacy hotkeys -> toggle=%s freeze=%s (F11/F12 clash with "
-      "XXMI/3DMigoto)",
+  AppendConfigLine("# hotkey-migrated: legacy defaults -> L/P (put your own value back "
+                   "here if you prefer it)\n");
+  Log("[CFG] migrated legacy hotkeys -> toggle=%s freeze=%s (old defaults clash with "
+      "other plugins)",
       legacyToggle ? "L" : "kept", legacyFreeze ? "P" : "kept");
 }
 
@@ -382,6 +382,7 @@ static bool LoadPoserConfig() {
     else if (strcmp(key, "freeze_key") == 0)
       ParseHotkey(val, &g_freezeVK, &g_freezeCtrl, 'P', false);
     else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
+    else if (strcmp(key, "ik_enabled") == 0)      g_ikEnabled = (strtoul(val, nullptr, 0) != 0);
     else if (strcmp(key, "terms_version") == 0)
       g_termsAcceptedVersion = (int)strtoul(val, nullptr, 0);
     else if (strcmp(key, "overlay_mode") == 0)    g_overlayMode = (int)strtoul(val, nullptr, 0);
@@ -417,11 +418,11 @@ static bool LoadPoserConfig() {
   fclose(f);
   CheckHotkeyConflicts();
   Log("[CFG] gui_toggle_key=%s%d (0x%X) freeze_key=%s%d (0x%X) "
-      "overlay_mode=%d overlay_fps=%d",
+      "overlay_mode=%d overlay_fps=%d ik=%d",
       g_guiToggleCtrl ? "CTRL+" : "", g_guiToggleVK, g_guiToggleVK,
       g_freezeCtrl ? "CTRL+" : "", g_freezeVK, g_freezeVK, g_overlayMode,
-      g_overlayFps);
-  // 配置是老版本留下的值时，用户容易以为"默认键没生效"（旧版默认 F12/F11），
+      g_overlayFps, (int)g_ikEnabled);
+  // 配置是老版本留下的值时，用户容易以为"默认键没生效"（旧版默认的功能键），
   // 这里把"实际生效的键"连同提示一起打出来
   {
     char hk1[32] = {}, hk2[32] = {};

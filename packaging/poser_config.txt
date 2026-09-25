@@ -1,5 +1,5 @@
 # Endfield Poser config (key=value)
-# 呼出/隐藏面板：L（不用 F 键——XXMI/3DMigoto 会轮询 F11/F12，连 Ctrl+F12 也会触发它们的动作）
+# 呼出/隐藏面板：L（默认避开容易和其它插件冲突的按键；可在面板 `快捷键（可改）` 里改）
 gui_toggle_key=L
 # 冻结 / 解冻：P
 freeze_key=P
@@ -10,5 +10,7 @@ overlay_mode=0
 # 分层窗口路径的呈现帧率上限（0=不限）。装了较多 XXMI mod 的机器上，
 # 面板显示时如果觉得游戏变卡，可降到 30（面板本身刷新率会跟着降，但更省）。
 overlay_fps=60
+# 实验性的 IK 控制器（默认 0 = 关；面板里也可以勾）
+ik_enabled=0
 # 姿态预设目录（相对游戏根目录，或绝对路径）
 default_pose_dir=plugin\poses

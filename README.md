@@ -5,13 +5,15 @@
 
 > ⚠️ 使用前请先读文末的[用户协议与免责声明](#用户协议与免责声明)（含开源许可、内容合规与账号风险说明）。
 
-> 📦 **仓库重建说明**：本仓库在 2026-09 重建过，历史提交与旧 release 不再保留；下载一律以
-> 本仓库的 [Releases](https://github.com/honxi1/Endfield-Poser/releases/latest) 为准。
-> 版本号继续沿用（v0.3.5 → v0.3.6 可直接覆盖安装），旧的下载链接可能已失效。
+> 📦 **仓库说明**：本项目自 2026-09 起在本仓库维护，版本号继续沿用
+> （v0.3.5 → v0.3.6 可以直接覆盖安装，配置与 `plugin\poses` 姿态预设都不受影响）。
+> 下载请以本仓库的 [Releases](https://github.com/honxi1/Endfield-Poser/releases/latest) 为准；
+> 如果你看到的链接或版本与这里对不上，以这里为准。
 
 - 下载：[Releases](https://github.com/honxi1/Endfield-Poser/releases/latest)
 - 依赖全部自包含在 `deps/`，运行时不联网；本仓库整体按 **AGPL-3.0** 发布（[LICENSE](LICENSE)），
   第三方来源与依赖见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)
+- 使用须知（先看这个）：[docs/notice.md](docs/notice.md)
 - 功能概览与后续计划：[docs/roadmap.md](docs/roadmap.md)
 
 ## 下载与安装
@@ -41,7 +43,7 @@
 > （**看不到鼠标就按住 Alt** 呼出游戏光标）。**没点同意之前，插件不会安装任何游戏侧 hook、
 > 也不会读写游戏数据**；点「不同意」则本次不加载任何功能（按面板快捷键可把窗口叫回来，
 > 不必重启游戏）。同意后会写一行 `terms_version` 进 `plugin\poser_config.txt`，以后不再打扰；
-> 只有条款版本更新时才会再弹一次。
+> 只有条款版本更新时才会再弹一次。**同意之后，面板顶部的「用户协议」按钮可以随时再看一遍**（只读回看，不影响使用）。
 
 渲染 API 说明：插件与游戏用的 API 无关（面板是自建的 D3D11 + DirectComposition 透明窗口）。
 **DX11 与 Vulkan 两种模式都已实测可用**；用 Vulkan 时请确保 `vulkan-1.dll`（本包的代理）也在
@@ -59,13 +61,10 @@
 | `P` | 冻结 / 解冻 |
 | 按住 `Alt` | 光标归面板（游戏自己放开光标时——例如摄影模式——直接点即可） |
 
-> **为什么不用 F11/F12（连 Ctrl+F12 也不行）**：XXMI / 3DMigoto 是直接轮询 F11/F12 的
-> 按键状态，你按 `Ctrl+F12` 它们照样会触发自己的动作 —— 只有完全不碰 F 键才躲得掉，所以默认用 `L` / `P`。
-> 代价是游戏内文本框/聊天里打字可能误触发（插件自己面板的输入框已屏蔽）。想换键：点
-> `快捷键（可改）` → `改键` → 直接按（自动写回 `poser_config.txt`，`Esc` 取消）。
-> 单键（含字母）也允许绑，但游戏内打字会误触发——绑了单键主面板会提醒，建议用带 Ctrl 的组合。
+> 默认 `L` / `P` 是为了避开其它插件常用的按键；想在游戏内打字时不误触发，建议改成带 `Ctrl`
+> 的组合。想换键：点 `快捷键（可改）` → `改键` → 直接按（自动写回 `poser_config.txt`，`Esc` 取消）。
 
-典型流程：进游戏 → `Ctrl+F11` 冻结 → 在 3D 视图里点选骨骼（勾「全量骨骼(微调)」可点到从骨与手指）→
+典型流程：进游戏 → `P` 冻结 → 在 3D 视图里点选骨骼（勾「全量骨骼(微调)」可点到从骨与手指）→
 拖旋转盘或调参数 → 命名并保存姿态。
 
 - 姿态文件：`<游戏目录>\plugin\poses\*.poser.json`（含 humanoid 骨、从骨与面部形态键）
@@ -89,7 +88,7 @@
 ## 配置（`plugin\poser_config.txt`）
 
 ```
-gui_toggle_key=L          # 支持 L / CTRL+L / VK_F12 / 0x7B 这类写法
+gui_toggle_key=L          # 支持 L / CTRL+L / INSERT / 0x2D 这类写法
 freeze_key=P              # 冻结 / 解冻（写法同上）
 click_through=1           # 1=覆盖层常驻并真穿透（推荐）；0=按住 Alt 才显示面板
 overlay_mode=0            # 0=自动（检测到 XXMI/3DMigoto 时改用分层窗口）；1=强制 DComp；2=强制分层窗口

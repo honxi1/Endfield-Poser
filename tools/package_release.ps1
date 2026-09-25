@@ -13,8 +13,8 @@
     - 包内固定带 LICENSE 与 THIRD_PARTY_NOTICES（AGPL 分发要求），并在打包前跑一遍
       「署名自查」：以 THIRD_PARTY_NOTICES 里列出的名称为关键词扫包内文本文件，
       THIRD_PARTY_NOTICES 自身除外；命中即报错。
-    - 面向用户的三个文件来自版本库：docs/tutorial.md（→ 使用教程.md）、
-      packaging\安装说明.txt、packaging\poser_config.txt。
+    - 面向用户的四个文件来自版本库：docs/notice.md（→ 使用须知.md）、
+      docs/tutorial.md（→ 使用教程.md）、packaging\安装说明.txt、packaging\poser_config.txt。
 #>
 [CmdletBinding()]
 param(
@@ -37,12 +37,13 @@ $zipPath   = Join-Path $releaseRoot "EndfieldPoser-v$Version.zip"
 $tutorialSrc = if ($Tutorial)     { $Tutorial }     else { Join-Path $root 'docs\tutorial.md' }
 $notesSrc    = if ($InstallNotes) { $InstallNotes } else { Join-Path $root 'packaging\安装说明.txt' }
 $configSrc   = if ($PluginConfig) { $PluginConfig } else { Join-Path $root 'packaging\poser_config.txt' }
+$noticeSrc   = Join-Path $root 'docs\notice.md'
 
 $required = @(
   (Join-Path $root 'LICENSE'),
   (Join-Path $root 'THIRD_PARTY_NOTICES'),
   (Join-Path $root '安全安装.bat'),
-  $tutorialSrc, $notesSrc, $configSrc,
+  $noticeSrc, $tutorialSrc, $notesSrc, $configSrc,
   (Join-Path $root 'plugin\poser.dll'),
   (Join-Path $root 'plugin\d3dcompiler_47.dll'),
   (Join-Path $root 'plugin\vulkan-1.dll')
@@ -116,6 +117,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stage 'plugin') | Out-Null
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE')            -Destination (Join-Path $stage 'LICENSE') -Force
 Copy-Item -LiteralPath (Join-Path $root 'THIRD_PARTY_NOTICES') -Destination (Join-Path $stage 'THIRD_PARTY_NOTICES') -Force
 Copy-Item -LiteralPath (Join-Path $root '安全安装.bat')         -Destination (Join-Path $stage '安全安装.bat') -Force
+Copy-Item -LiteralPath $noticeSrc                              -Destination (Join-Path $stage '使用须知.md') -Force
 Copy-Item -LiteralPath $tutorialSrc                            -Destination (Join-Path $stage '使用教程.md') -Force
 Copy-Item -LiteralPath $notesSrc                               -Destination (Join-Path $stage '安装说明.txt') -Force
 Copy-Item -LiteralPath $configSrc                              -Destination (Join-Path $stage 'plugin\poser_config.txt') -Force
@@ -166,7 +168,8 @@ Get-ChildItem -Recurse -File -LiteralPath $stage | ForEach-Object {
   if ($scanExt -notcontains $_.Extension.ToLower()) { return }
   $name = $_.Name
   $raw = $latin.GetString([IO.File]::ReadAllBytes($_.FullName))
-  foreach ($m in [regex]::Matches($raw, '(?<![/0-9A-Za-z])F1[12](?![/0-9A-Za-z])')) {
+  # 排除这些正当写法：F12/F11（迁移说明）、Ctrl+F12（修饰键）、F10~F12（范围）
+  foreach ($m in [regex]::Matches($raw, '(?<![/+~0-9A-Za-z])F1[12](?![/~0-9A-Za-z])')) {
     $driftHits += "$name <- $($m.Value)"
   }
 }

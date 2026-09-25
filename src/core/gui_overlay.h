@@ -35,7 +35,14 @@ void GameFrameTick(); // poser.cpp 定义：每帧游戏逻辑（冻结维持/IK
 bool TermsPending(); // 未同意、且用户没有点过「不同意并退出」
 void TermsReopen();  // 把弹窗叫回来（按面板热键时调用）
 void TermsDecline(); // 收起弹窗并保持惰性（按面板热键时调用）
+bool TermsReviewVisible(); // 已同意后从面板打开的「只读回看」窗口是否开着
+void TermsOpenReview();    // 打开回看窗口（面板里点「用户协议」时调用）
+void TermsCloseReview();   // 关闭回看窗口
+bool TermsWindowActive();  // 首次同意流程 或 回看窗口 —— 覆盖层据此决定吃不吃鼠标
 bool TermsDialogHovered(); // 指针是否落在协议窗口上
+bool LaunchTrusted();      // 启动方式是否可信（父进程是启动器 / XXMI）
+bool LaunchWarningVisible(); // 是否要显示"启动方式不对"的提示窗
+void DismissLaunchWarning(); // 关掉那条提示
 
 // 外部控制回调（poser.cpp 注册）：code 0=切模式 1=冻结/解冻 2=T-pose
 typedef void (*ExtControlFn)(int code);
@@ -94,12 +101,15 @@ static void SetOverlayClickThrough(bool on) {
 }
 static volatile bool g_guiVisible = false;
 static volatile bool g_guiRunning = false;
+// GUI 线程是否已 attach 到 IL2CPP 域 —— 只有为 true 之后才允许碰游戏对象。
+// （见 GuiThread：先等窗口、再等域，最后才 attach。）
+static volatile bool g_guiAttached = false;
 static bool g_xxmiDetected = false; // 进程里发现第三方 d3d11.dll（XXMI/3DMigoto）
 
 // ---- 热键轮询线程 ----
 // GetAsyncKeyState 的 bit0 是"自上次调用以来按下过"的锁存位，**进程内任何一次同键调用
-// 都会把它清掉**：装了 XXMI/3DMigoto 后它们（以及游戏自己）也在轮询 F11/F12，
-// 于是我们的 bit0 时有时无 —— 这正是"F11 有时有用有时没用"的根因。
+// 都会把它清掉**：装了 XXMI/3DMigoto 后它们（以及游戏自己）也在轮询同一批按键，
+// 于是我们的 bit0 时有时无 —— 这正是"热键有时有用有时没用"的根因。
 // 这里改成独立线程 5ms 轮询 bit15（当前是否按下）+ 自己维护边沿，不依赖锁存位；
 // 也不怕 GUI 循环被分层回读/游戏卡顿拖慢而漏掉短按。
 static volatile LONG g_hotkeyToggleReq = 0;
@@ -798,7 +808,7 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
     // 但只在**指针落在协议窗口上**时才吃：整块屏幕都吃会把游戏自己的菜单/退出按钮
     // 一起吞掉，游戏会变得点不动、退不出去（实测踩过）。拖拽中要继续吃，
     // 否则拉滚动条时松键消息会丢给游戏。
-    bool take = TermsPending()
+    bool take = TermsWindowActive()
                     ? (TermsDialogHovered() || g_inputMouseHeld)
                     : (g_guiVisible &&
                        (g_inputDragging || g_inputMouseHeld ||
@@ -811,7 +821,7 @@ static LRESULT CALLBACK GuiWndProc(HWND hWnd, UINT msg, WPARAM wParam,
     return take ? HTCLIENT : HTTRANSPARENT;
   }
   // 协议弹窗期间收到左键：用来确认点击是否真的到达了覆盖层（排查"点不动"用）
-  if (msg == WM_LBUTTONDOWN && TermsPending())
+  if (msg == WM_LBUTTONDOWN && TermsWindowActive())
     Log("[INPUT] LMB down while the agreement dialog is up");
   if (msg == WM_LBUTTONDOWN)
     g_inputMouseHeld = true;
@@ -864,9 +874,9 @@ static void AddUiFont(ImGuiIO &io) {
   fontCfg.OversampleV = 1;
   fontCfg.PixelSnapH = true;
   // 常用字表是 2500 字，不含一部分界面用字 ——「骼」（骨骼）、「瞬」、「Φ」（参数）、
-  // 「账」「钮」（协议弹窗）都不在表内，缺了会直接渲染成方框。这里显式补上。
+  // 「账」「钮」（协议弹窗）、「崩」（启动方式提示）都不在表内，缺了会渲染成方框。
   // 改过界面文案后跑 tools\check_ui_font.ps1 对一遍，它就是拿这份表去比的。
-  static const char *kExtraUiChars = u8"骼瞬Φ账钮";
+  static const char *kExtraUiChars = u8"骼瞬Φ账钮崩";
   const char *fontPath = "C:\\Windows\\Fonts\\msyh.ttc";
   if (GetFileAttributesA(fontPath) != INVALID_FILE_ATTRIBUTES) {
     ImFontGlyphRangesBuilder builder;
@@ -882,16 +892,12 @@ static void AddUiFont(ImGuiIO &io) {
 }
 
 static DWORD WINAPI GuiThread(LPVOID) {
-  // 附加到 IL2CPP 域：GUI 线程每帧会经 DrawPoserGui->GameFrameTick 触碰游戏对象，
-  // 不附加会让 GC 从"未知线程"收集托管对象，触发 fatal error 崩溃。
-  if (il2cpp_domain_get && il2cpp_thread_attach) {
-    void *domain = il2cpp_domain_get();
-    if (domain) {
-      il2cpp_thread_attach(domain);
-      Log("[GUI] attached to IL2CPP domain");
-    }
-  }
-  // 游戏启动较慢：先轮询等 Unity 主窗口出现（最多 60 秒），再回退任意窗口
+  // 【attach 时机很关键】先等 Unity 主窗口出现（最多 60 秒），再确认 IL2CPP 域就绪，
+  // 最后才 attach。GameAssembly.dll 加载 ≠ 运行时可用：在 GC 的线程注册就绪之前调用
+  // il2cpp_thread_attach 会直接把游戏打崩：
+  //   Fatal error in GC / Threads explicit registering is not previously enabled
+  // （实测踩过：玩家只会看到一个崩溃弹窗。）
+  // 游戏启动较慢：轮询等 Unity 主窗口出现，再回退任意窗口
   g_gameHwnd = nullptr;
   for (int i = 0; i < 60 && !g_gameHwnd; i++) {
     g_gameHwnd = FindGameHwnd();
@@ -903,6 +909,28 @@ static DWORD WINAPI GuiThread(LPVOID) {
   if (!g_gameHwnd) {
     Log("[GUI] No game hwnd, GUI thread exits");
     return 0;
+  }
+  // 窗口已经有了，再等域真正就绪；30 秒还不行就干脆不加载（不 attach、不崩游戏）。
+  //
+  // 另外：启动方式不可信（直启游戏）时**根本不 attach** —— 那种情况下运行时的就绪
+  // 时机无法判断，attach 早一步就是 "Fatal error in GC"，玩家只会看到崩溃弹窗。
+  // GUI 线程照常起来，由面板提示玩家改用启动器/XXMI。
+  if (!LaunchTrusted()) {
+    Log("[GUI] launch source not trusted -> skip IL2CPP attach; plugin stays inert");
+  } else if (il2cpp_domain_get && il2cpp_thread_attach) {
+    void *domain = nullptr;
+    for (int i = 0; i < 30 && !domain; i++) {
+      domain = il2cpp_domain_get();
+      if (!domain)
+        Sleep(1000);
+    }
+    if (!domain) {
+      Log("[GUI] IL2CPP domain not ready after 30s -> overlay disabled (请通过游戏启动器启动)");
+      return 0;
+    }
+    il2cpp_thread_attach(domain);
+    g_guiAttached = true; // 之后 poser.cpp 才允许碰游戏对象
+    Log("[GUI] attached to IL2CPP domain");
   }
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
@@ -1021,7 +1049,16 @@ static DWORD WINAPI GuiThread(LPVOID) {
 
     // 快捷键：切换面板显示（由 HotkeyPollThread 边沿检测，见上方注释）
     if (TakeHotkeyToggle()) {
-      if (TermsPending()) {
+      if (LaunchWarningVisible()) {
+        // 启动方式提示：按一下热键就关掉（插件本来就是停用状态）
+        DismissLaunchWarning();
+        g_guiVisible = false;
+      } else if (TermsReviewVisible()) {
+        // 回看窗口正开着：这一下当成「关闭回看」，面板保持打开
+        TermsCloseReview();
+        g_guiVisible = true;
+        Log("[LEGAL] terms review closed by hotkey");
+      } else if (TermsPending()) {
         // 弹窗正开着：这一下当成"收起"，插件保持惰性 —— 给用户一条随时把游戏
         // 拿回来的退路（再按一次会把弹窗叫回来）。
         TermsDecline();
@@ -1034,7 +1071,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
       }
     }
     // 协议没同意前强制显示覆盖层：面板默认是关着的，不强制用户就看不到弹窗。
-    if (TermsPending())
+    if (TermsPending() || TermsReviewVisible() || LaunchWarningVisible())
       g_guiVisible = true;
 
     // 只有「面板打开 且 按住 Alt」时才把覆盖层显示出来（此时它接管鼠标/键盘）。
@@ -1130,7 +1167,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
       // 协议弹窗期间是模态的：此时 GameFrameTick 还没跑过（未同意前它不碰游戏），
       // g_cursorFreeNow 一直是初值，下面那套"光标自由 + 悬停交互项才接管"的判断
       // 会恒为假 —— 表现就是弹窗看得见但点不动。这里直接接管鼠标。
-      if (TermsPending()) {
+      if (TermsWindowActive()) {
         // 只在指针落在弹窗上时才接管鼠标；其它地方保持穿透，游戏照常可点。
         SetOverlayClickThrough(!(TermsDialogHovered() || g_inputMouseHeld));
         // 游戏平时会把系统光标藏起来（鼠标锁在窗口里转视角）。藏了就补一个软光标，

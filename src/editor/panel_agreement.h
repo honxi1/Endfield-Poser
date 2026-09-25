@@ -61,9 +61,11 @@ static const char *kTermsLines[] = {
     "设备异常）。不接受以上任何一条，请不要继续使用。",
 };
 
-// 画协议弹窗。toggleHotkey = 当前生效的面板热键（写成 "L" / "Ctrl+F12" 这样）。
+// 画协议弹窗。toggleHotkey = 当前生效的面板热键（写成 "L" / "Ctrl+Insert" 这样）。
 // 返回 1 = 本帧点了「同意」，-1 = 本帧点了「不同意」，0 = 还在看。
-static int DrawAgreementDialog(const char *toggleHotkey) {
+// reviewMode = 用户**已经同意过**、从面板里点「用户协议」回看：
+// 只读展示，按钮变成「关闭」，也不要求滚到底。
+static int DrawAgreementDialog(const char *toggleHotkey, bool reviewMode) {
   static bool s_reachedBottom = false;
   int result = 0;
 
@@ -71,7 +73,9 @@ static int DrawAgreementDialog(const char *toggleHotkey) {
   ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                           ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(620.0f, 480.0f), ImGuiCond_Always);
-  ImGui::Begin(u8"用户协议与免责声明", nullptr,
+  ImGui::Begin(reviewMode ? u8"用户协议与免责声明（已同意）"
+                          : u8"用户协议与免责声明",
+               nullptr,
                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoSavedSettings |
                    ImGuiWindowFlags_NoMove);
@@ -82,10 +86,16 @@ static int DrawAgreementDialog(const char *toggleHotkey) {
   // 热键用实际生效的那个：用户可能早就把默认的 L 改掉了。
   {
     char intro[320] = {};
-    snprintf(intro, sizeof(intro),
-             u8"请读完下面的条款再决定。点「同意并继续」后，本插件才会加载与游戏相关的"
-             u8"功能；点「不同意」则本次不加载任何功能（之后按 %s 可以把本窗口叫回来）。",
-             toggleHotkey);
+    if (reviewMode)
+      snprintf(intro, sizeof(intro),
+               u8"以下是你此前同意的条款，可随时回看。点「关闭」回到面板"
+               u8"（按 %s 也可以直接关掉本窗口）。",
+               toggleHotkey);
+    else
+      snprintf(intro, sizeof(intro),
+               u8"请读完下面的条款再决定。点「同意并继续」后，本插件才会加载与游戏相关的"
+               u8"功能；点「不同意」则本次不加载任何功能（之后按 %s 可以把本窗口叫回来）。",
+               toggleHotkey);
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(intro);
     ImGui::PopTextWrapPos();
@@ -117,23 +127,30 @@ static int DrawAgreementDialog(const char *toggleHotkey) {
     if (!osCursorShown)
       ImGui::TextColored(ImVec4(1.00f, 0.78f, 0.25f, 1.0f),
                          u8"看不到鼠标？按住 Alt 呼出游戏光标，再点下面的按钮。");
+    else if (reviewMode)
+      ImGui::TextDisabled(u8"鼠标可用：看完点「关闭」即可。");
     else
       ImGui::TextDisabled(u8"鼠标可用：先读到底，再点「同意并继续」。");
   }
 
-  if (!s_reachedBottom)
+  if (!reviewMode && !s_reachedBottom)
     ImGui::TextDisabled(u8"请把上面的条款读到底，「同意并继续」才会变成可点。");
 
-  if (!s_reachedBottom)
-    ImGui::BeginDisabled();
-  if (ImGui::Button(u8"同意并继续", ImVec2(160.0f, 0.0f)))
-    result = 1;
-  if (!s_reachedBottom)
-    ImGui::EndDisabled();
+  if (reviewMode) {
+    if (ImGui::Button(u8"关闭", ImVec2(160.0f, 0.0f)))
+      result = 1;
+  } else {
+    if (!s_reachedBottom)
+      ImGui::BeginDisabled();
+    if (ImGui::Button(u8"同意并继续", ImVec2(160.0f, 0.0f)))
+      result = 1;
+    if (!s_reachedBottom)
+      ImGui::EndDisabled();
 
-  ImGui::SameLine();
-  if (ImGui::Button(u8"不同意（本次不加载）", ImVec2(180.0f, 0.0f)))
-    result = -1;
+    ImGui::SameLine();
+    if (ImGui::Button(u8"不同意（本次不加载）", ImVec2(180.0f, 0.0f)))
+      result = -1;
+  }
 
   ImGui::SameLine();
   ImGui::TextDisabled(u8"（v%d）", POSER_TERMS_VERSION);

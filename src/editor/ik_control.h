@@ -41,10 +41,9 @@ static IkLimb g_ikLimbs[4] = {
 static int g_selectedIk = -1;
 
 // 【实验性功能 · 默认关闭】IK 控制器还没做完：实测能选中目标点、拖动手柄，但骨骼不跟随。
-// 所以整体关闭（面板不显示、不解算、不绘制），代码保留待续 —— 不要当成可用功能对外宣传，
-// 文档里也要按"实验性、默认关闭"来写。
-// 想继续调试把下面这个开关改成 true 即可。
-static const bool g_ikFeatureEnabled = false;
+// 开关由配置项 ik_enabled 驱动（面板里也有复选框），关着时面板不显示、不解算、不绘制。
+// 不要当成可用功能对外宣传，文档里按"实验性、默认关闭"来写。
+static bool g_ikFeatureEnabled = false;
 
 static void *IkFindBone(HumanBodyBones b) {
   for (int i = 0; i < s_humanBoneCount; i++)
