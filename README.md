@@ -5,6 +5,10 @@
 
 > ⚠️ 使用前请先读文末的[用户协议与免责声明](#用户协议与免责声明)（含开源许可、内容合规与账号风险说明）。
 
+> 📦 **仓库重建说明**：本仓库在 2026-09 重建过，历史提交与旧 release 不再保留；下载一律以
+> 本仓库的 [Releases](https://github.com/honxi1/Endfield-Poser/releases/latest) 为准。
+> 版本号继续沿用（v0.3.5 → v0.3.6 可直接覆盖安装），旧的下载链接可能已失效。
+
 - 下载：[Releases](https://github.com/honxi1/Endfield-Poser/releases/latest)
 - 依赖全部自包含在 `deps/`，运行时不联网；本仓库整体按 **AGPL-3.0** 发布（[LICENSE](LICENSE)），
   第三方来源与依赖见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)
