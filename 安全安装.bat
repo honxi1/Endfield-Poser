@@ -72,23 +72,26 @@ if not exist "%TARGET_DIR%\plugins" (
     goto error_exit
 )
 
-REM 3. 检查是否已经安装过本工具 (特征为存在 plugin 文件夹或旧备份)
+REM 3. 检查是否已经安装过本工具
+REM    只看"插件本体 / 原版备份"，不能看 plugin 文件夹：卸载时会刻意保留
+REM    plugin\poses 与日志，那个文件夹会一直存在，用它判断会把"已卸载"误判成
+REM    "还装着"，于是反复提示卸载。
 set "ALREADY_INSTALLED=0"
-if exist "%TARGET_DIR%\plugin" set "ALREADY_INSTALLED=1"
+if exist "%TARGET_DIR%\plugin\poser.dll" set "ALREADY_INSTALLED=1"
 if exist "%TARGET_DIR%\d3dcompiler_47.dll.backup" set "ALREADY_INSTALLED=1"
 if exist "%TARGET_DIR%\vulkan-1.dll.backup" set "ALREADY_INSTALLED=1"
 
 if "%ALREADY_INSTALLED%"=="1" (
     echo.
     echo ======================================================================
-    echo 【检测到已安装】目标游戏目录中已存在 Endfield Poser 插件或原版备份！
-    echo ★ 关于【更新插件】：
-    echo   如果您想要更新此插件，需要先【卸载旧版】；
-    echo   卸载完成后，【重新双击运行此脚本】即可完成新版本的全新安装。
+    echo 【检测到已安装】目标游戏目录中已存在 Endfield Poser 插件！
     echo.
-    echo 是否现在卸载已有的 Endfield Poser 并将游戏还原为原版？
+    echo   [U] 覆盖更新：用本包的文件覆盖旧版，保留你的配置与姿态预设
+    echo   [Y] 卸载还原：移除插件并把游戏恢复原版（保留 poses 与配置）
+    echo   [N] 退出，不作任何更改
+    echo ======================================================================
     echo.
-    goto ask_uninstall
+    goto ask_action
 )
 
 REM ===================== 以下为全新安装流程 =====================
@@ -160,14 +163,15 @@ if errorlevel 1 (
     echo [错误] 复制 poser.dll 失败！
     goto error_exit
 )
-REM Install bundled expression calibrations; keep unrelated custom profiles.
+REM 角色表情校准（MMD 面部映射）：包里有就一起装，不动用户自己加的那些
 if exist "%~dp0plugin\mmd\character-faces\*.face.json" (
     if not exist "%TARGET_DIR%\plugin\mmd\character-faces" mkdir "%TARGET_DIR%\plugin\mmd\character-faces" >nul 2>&1
     copy /Y "%~dp0plugin\mmd\character-faces\*.face.json" "%TARGET_DIR%\plugin\mmd\character-faces\" >nul
     if errorlevel 1 (
-        echo [Error] Failed to copy character expression profiles.
+        echo [错误] 复制角色表情校准失败！请先完全退出游戏和启动器再试。
         goto error_exit
     )
+    echo  - 已复制角色表情校准
 )
 if not exist "%TARGET_DIR%\plugin\poser_config.txt" (
     copy /Y "%~dp0plugin\poser_config.txt" "%TARGET_DIR%\plugin\" >nul
@@ -204,7 +208,8 @@ echo    ★ 姿势预设保存路径：%TARGET_DIR%\plugin\poses\
 echo    ★ 运行排查日志文件：%TARGET_DIR%\plugin\poser_log.txt
 echo.
 echo 4.【后续更新或卸载】：
-echo    如需更新或卸载，重新双击运行本脚本即可一键卸载旧版，并还原官方文件。
+echo    重新双击运行本脚本即可：选 [U] 覆盖更新（保留配置与姿态），
+echo    或选 [Y] 卸载并把游戏还原为官方原版。
 echo    新版发布页：【 https://github.com/honxi1/Endfield-Poser/releases 】
 echo.
 echo 请确认已仔细阅读以上使用说明。按任意键确认已读并退出向导...
@@ -213,18 +218,92 @@ exit /b 0
 
 REM ===================== 以下为卸载与还原流程 =====================
 
-:ask_uninstall
-set "UNINSTALL_CHOICE="
-set /p "UNINSTALL_CHOICE=请输入 [Y] 卸载还原  /  [N] 保持现状退出: "
-if defined UNINSTALL_CHOICE set "UNINSTALL_CHOICE=%UNINSTALL_CHOICE: =%"
+:ask_action
+set "ACTION_CHOICE="
+set /p "ACTION_CHOICE=请输入 [U] 覆盖更新  /  [Y] 卸载还原  /  [N] 退出: "
+if defined ACTION_CHOICE set "ACTION_CHOICE=%ACTION_CHOICE: =%"
 
-if /i "%UNINSTALL_CHOICE%"=="Y" goto do_uninstall
-if /i "%UNINSTALL_CHOICE%"=="N" goto cancel_uninstall
+if /i "%ACTION_CHOICE%"=="U" goto do_update
+if /i "%ACTION_CHOICE%"=="Y" goto do_uninstall
+if /i "%ACTION_CHOICE%"=="N" goto cancel_uninstall
 
 echo.
-echo [错误] 输入无效，请输入字母 Y 或 N
+echo [错误] 输入无效，请输入字母 U、Y 或 N
 echo.
-goto ask_uninstall
+goto ask_action
+
+REM ---- 覆盖更新：只替换插件文件，保留配置 / 姿态预设 / 日志 ----
+:do_update
+echo.
+echo 正在覆盖更新插件文件（保留配置与姿态预设）...
+echo ----------------------------------------------------------------------
+if not exist "%~dp0plugin\poser.dll" (
+    echo [错误] 安装包内缺失 plugin\poser.dll，请检查安装包完整性！
+    goto error_exit
+)
+if not exist "%~dp0d3dcompiler_47.dll" (
+    echo [错误] 安装包内缺失 d3dcompiler_47.dll，请检查安装包完整性！
+    goto error_exit
+)
+
+REM 原版代理 DLL 如果还没备份过，先备份，别把游戏自带的那份盖掉
+if exist "%TARGET_DIR%\d3dcompiler_47.dll" if not exist "%TARGET_DIR%\d3dcompiler_47.dll.backup" (
+    ren "%TARGET_DIR%\d3dcompiler_47.dll" "d3dcompiler_47.dll.backup"
+)
+if exist "%TARGET_DIR%\vulkan-1.dll" if not exist "%TARGET_DIR%\vulkan-1.dll.backup" (
+    ren "%TARGET_DIR%\vulkan-1.dll" "vulkan-1.dll.backup"
+)
+
+copy /Y "%~dp0d3dcompiler_47.dll" "%TARGET_DIR%\" >nul
+if errorlevel 1 (
+    echo [错误] 复制 d3dcompiler_47.dll 失败！请先完全退出游戏和启动器再试。
+    goto error_exit
+)
+echo  - 已更新 d3dcompiler_47.dll
+
+if exist "%~dp0vulkan-1.dll" (
+    copy /Y "%~dp0vulkan-1.dll" "%TARGET_DIR%\" >nul
+    if errorlevel 1 (
+        echo [错误] 复制 vulkan-1.dll 失败！请先完全退出游戏和启动器再试。
+        goto error_exit
+    )
+    echo  - 已更新 vulkan-1.dll
+)
+
+if not exist "%TARGET_DIR%\plugin" mkdir "%TARGET_DIR%\plugin" >nul 2>&1
+copy /Y "%~dp0plugin\poser.dll" "%TARGET_DIR%\plugin\" >nul
+if errorlevel 1 (
+    echo [错误] 复制 poser.dll 失败！请先完全退出游戏和启动器再试。
+    goto error_exit
+)
+REM 角色表情校准（MMD 面部映射）：包里有就一起更新
+if exist "%~dp0plugin\mmd\character-faces\*.face.json" (
+    if not exist "%TARGET_DIR%\plugin\mmd\character-faces" mkdir "%TARGET_DIR%\plugin\mmd\character-faces" >nul 2>&1
+    copy /Y "%~dp0plugin\mmd\character-faces\*.face.json" "%TARGET_DIR%\plugin\mmd\character-faces\" >nul
+    if errorlevel 1 (
+        echo [错误] 复制角色表情校准失败！请先完全退出游戏和启动器再试。
+        goto error_exit
+    )
+    echo  - 已更新角色表情校准
+)
+if not exist "%TARGET_DIR%\plugin\poser_config.txt" (
+    copy /Y "%~dp0plugin\poser_config.txt" "%TARGET_DIR%\plugin\" >nul
+    echo  - 已更新 poser.dll，并补上默认 poser_config.txt
+) else (
+    echo  - 已更新 poser.dll（保留你现有的 poser_config.txt）
+)
+
+echo.
+echo ======================================================================
+echo                         更新完成！
+echo ======================================================================
+echo 已更新至：%TARGET_DIR%
+echo 你的配置、姿态预设（plugin\poses）与日志都没有被改动。
+echo ======================================================================
+echo.
+echo 按任意键退出向导...
+pause >nul
+exit /b 0
 
 :cancel_uninstall
 echo.
@@ -273,15 +352,15 @@ if exist "%TARGET_DIR%\vulkan-1.dll.backup" (
     )
 )
 
-REM 3. 只移除插件文件，保留 plugin\poses 姿态预设与日志（避免误删用户数据）
+REM 3. 只移除插件本体，保留 plugin\poses 姿态预设、日志与 config（避免误删用户数据）
 if exist "%TARGET_DIR%\plugin\poser.dll" del /f /q "%TARGET_DIR%\plugin\poser.dll" >nul
-if exist "%TARGET_DIR%\plugin\poser_config.txt" del /f /q "%TARGET_DIR%\plugin\poser_config.txt" >nul
 if exist "%TARGET_DIR%\plugin\poser.dll" (
     echo [错误] 删除 poser.dll 失败，请先完全退出游戏再试。
     goto error_exit
 )
+REM plugin 文件夹里还剩 poses / 日志 / 配置，通常删不掉，删不掉也不用管
 rd "%TARGET_DIR%\plugin" >nul 2>&1
-echo [3/3] 已移除插件文件（plugin\poses 姿态预设与日志已保留）。
+echo [3/3] 已移除插件本体（plugin\ 里的姿态预设、日志与配置都已保留）。
 
 echo.
 echo ======================================================================

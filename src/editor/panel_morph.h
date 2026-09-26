@@ -179,11 +179,27 @@ static void DrawGameMorphPanel() {
 }
 
 static void DrawMorphPanel() {
-  int mode=s_mmdFaceMode?1:0;
-  ImGui::SetNextItemWidth(-1);
-  if(ImGui::Combo("##face-mode",&mode,u8"游戏模式\0MMD 模式\0"))SMCManualMode(mode==1);
-  if(s_mmdFaceMode)DrawMmdFaceSection();
-  else {
+  // 模式切换做成两个常驻按钮：原来塞在下拉框里，另一个选项不点开就看不见（"切换不明显"）。
+  const bool mmd = s_mmdFaceMode;
+  const ImVec4 kActive(0.26f, 0.59f, 0.98f, 0.90f); // 当前模式：高亮
+  const ImVec4 kIdle(0.22f, 0.22f, 0.22f, 1.00f);
+  const float two = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+  ImGui::PushStyleColor(ImGuiCol_Button, mmd ? kIdle : kActive);
+  if (ImGui::Button(u8"游戏表情", ImVec2(two, 0.0f)) && mmd)
+    SMCManualMode(false);
+  ImGui::PopStyleColor();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip(u8"游戏自带的 5 个口型 + 表情滑条（以中性默认脸为基准）");
+  ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_Button, mmd ? kActive : kIdle);
+  if (ImGui::Button(u8"MMD 表情", ImVec2(two, 0.0f)) && !mmd)
+    SMCManualMode(true);
+  ImGui::PopStyleColor();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip(u8"按角色校准的中文表情滑条（眉/眼/嘴等分类，可搜索、可叠加）");
+  ImGui::Separator();
+  if (s_mmdFaceMode)
+    DrawMmdFaceSection();
+  else
     DrawGameMorphPanel();
-  }
 }

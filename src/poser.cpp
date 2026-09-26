@@ -562,6 +562,8 @@ void DrawPoserGuiBody() {
         ImGui::SetTooltip(u8"\u628a\u6240\u6709\u9762\u677f\u7a97\u53e3\u56de\u5230\u9ed8"
                           u8"\u8ba4\u4f4d\u7f6e");
     }
+    // 反馈渠道：玩家多半不会去翻仓库，群号直接写在面板上（反馈时带上日志最快）
+    ImGui::TextDisabled(u8"\u4ea4\u6d41\u7fa4 1126684901");
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
       ImGui::TextDisabled("\u26a0 %s", g_hotkeyConflictMsg);

@@ -184,7 +184,8 @@ endfield-poser/
 - 如相关权利人、游戏官方或平台认为本仓库 / 发布包中的任何内容不妥，请通过
   **king_time@foxmail.com**（或 [issue](https://github.com/honxi1/Endfield-Poser/issues) /
   文末交流群）联系作者，**收到通知后会第一时间处理（包括删除相关内容、停止分发）**。
-- **如果你不接受以上任何一条，请立即停止使用并删除本工具**：用包内 `安全安装.bat` 卸载，
-  或手动删除 `plugin\poser.dll`、`plugin\poser_config.txt` 与游戏根目录的两个代理 DLL 并还原备份。
+- **如果你不接受以上任何一条，请立即停止使用并删除本工具**：用包内 `安全安装.bat` 卸载
+  （选 `[Y]`；它会还原备份、移除插件本体，但保留 `plugin\` 里的姿态预设与配置），
+  要彻底删除就连 `plugin\` 文件夹一起删掉。
 
 </details>

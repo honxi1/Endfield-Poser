@@ -30,6 +30,8 @@ struct AccessoryBone {
   int parentIdx;  // 原始遍历列表中的父骨下标（-1 = 根）
   int chainId;    // 所属从骨链 id
   bool locked;    // 锁定：钉在当前姿势，恢复等操作跳过
+  bool faceDriven; // 表情驱动骨（脸/唇/眉/眼/颊/舌…）：由 SMC 表情链路负责，
+                   // 冻结维持不能每帧把它们钉回快照，否则和表情互抢（"眼睛嘴巴抖"）
   Vec3 localPos;
   Quat localRot;
   Vec3 frozenPos; // 冻结瞬间姿态（"复位到冻结时刻"用，不随手动编辑改变）
@@ -75,6 +77,27 @@ static bool IsNoisyBoneName(const char *n) {
                                       nullptr};
   for (int k = 0; kSkip[k]; k++)
     if (strstr(low, kSkip[k]))
+      return true;
+  return false;
+}
+
+// 表情驱动骨：这些骨不归冻结维持管，改由 SMC 表情链路（含 MMD 模式）负责。
+// 名字取自实机（faceMdToothUpJoint / lipLdn1Joint / TongueMd01Joint / NoseMd01Joint…）。
+static bool IsFaceDrivenBoneName(const char *n) {
+  if (!n || !n[0])
+    return false;
+  char low[128];
+  int i = 0;
+  for (; n[i] && i < (int)sizeof(low) - 1; i++) {
+    char c = n[i];
+    low[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+  }
+  low[i] = 0;
+  static const char *const kFace[] = {"face", "lip", "brow", "eye",  "cheek",
+                                      "tongue", "nose", "teeth", "chin", "mouth",
+                                      "ear",  "jaw",  nullptr};
+  for (int k = 0; kFace[k]; k++)
+    if (strstr(low, kFace[k]))
       return true;
   return false;
 }
@@ -298,6 +321,7 @@ static void RebuildAccessories() {
     b.locked = false;
     snprintf(b.name, sizeof(b.name), "%s",
              s_rawBones[i].name[0] ? s_rawBones[i].name : "bone");
+    b.faceDriven = IsFaceDrivenBoneName(b.name);
     b.localPos = GetBoneLocalPos(b.transform);
     b.localRot = GetBoneLocalRot(b.transform);
     b.frozenPos = b.localPos;
@@ -311,8 +335,13 @@ static void RebuildAccessories() {
       s_accessoryChains[cid].rootBoneIdx = bidx;
     s_accessoryChains[cid].bones.push_back(bidx);
   }
-  Log("[POSER] Accessories rebuilt: %zu chains, %zu bones",
-      s_accessoryChains.size(), s_accessoryBones.size());
+  size_t faceDriven = 0;
+  for (const AccessoryBone &b : s_accessoryBones)
+    if (b.faceDriven)
+      faceDriven++;
+  Log("[POSER] Accessories rebuilt: %zu chains, %zu bones (%zu face-driven, "
+      "not pinned by the freeze)",
+      s_accessoryChains.size(), s_accessoryBones.size(), faceDriven);
   InstallAccessoryWriteHook(); // 从骨列表就绪后接管手动写骨 → 同步冻结快照
 }
 
@@ -406,6 +435,8 @@ static void ApplyAccessorySnapshot() {
   for (AccessoryBone &b : s_accessoryBones) {
     if (b.locked)
       continue; // 锁定骨保持钉住姿势
+    if (b.faceDriven)
+      continue; // 表情驱动骨交给 SMC 表情链路，钉回去会和表情每帧互抢
     SetBoneLocalPos(b.transform, b.localPos);
     SetBoneLocalRot(b.transform, b.localRot);
   }

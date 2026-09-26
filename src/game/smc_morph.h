@@ -137,7 +137,7 @@ static std::array<int,SMC_MAX_FACE_BONES> s_faceRegions=[] {
 }();
 static uint64_t s_faceGeneration=1;
 static int s_faceBindingRevision=-1;
-static bool s_mmdFaceMode=false;
+static bool s_mmdFaceMode=true; // 默认就用 MMD 表情面板（想用游戏自带滑条再切「游戏表情」）
 static mmd_face_controls::State s_manualFace;
 static void SMCFaceInvalidate() {
   s_manualFace={};
@@ -1416,8 +1416,10 @@ static SMCExpressionFrame SMCManualFrame() {
 static void *__fastcall HookedSMCMorphJob(void *result, void *smc, uint32_t count,
                                         void *dependency, void *method) {
   if (SMCRuntimeClosing()) return s_origMorphJob?s_origMorphJob(result,smc,count,dependency,method):result;
+  // 抢不到锁也要继续：GUI 线程整帧持锁时，try_to_lock 会失败，而这里做的是
+  // "把 MMD 权重写进这一帧的求值"，跳过就没表情（表现为闪、或关掉面板才生效）。
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
-  if (!SMCRuntimeClosing() && SMCEnabled() && lock.owns_lock() && !g_charChanged && !SMCCharacterSwitchPending())
+  if (!SMCRuntimeClosing() && SMCEnabled() && !g_charChanged && !SMCCharacterSwitchPending())
     SMCMorphJobBefore(smc);
   // Returning explicitly preserves RAX across the lock destructor as well as
   // busy/switching paths; a tail-call accidentally preserving RAX is insufficient.
@@ -1674,6 +1676,13 @@ static void SMCExpressionEvaluate() {
 static void SMCWriteTouchedBones() {
   if (!s_faceBoneEvalOk)
     return; // 本帧没成功重算，别写回陈旧值
+  // [金丝雀] 只盯"被表情真正改变了的那几根骨"（眼睛/嘴就在这里）：写回前先读一次
+  // 当前值，看它在我们上一帧写完之后有没有被别人改掉。健康时完全安静，只在真的
+  // 又出现"和表情抢写"时才打一行（每 60 帧判定一次）。
+  static int s_probeFrame = 0, s_probeBad = 0, s_probeAffected = 0, s_probeSample = -1;
+  static bool s_probeValid[SMC_MAX_FACE_BONES] = {};
+  static Quat s_probeLastRot[SMC_MAX_FACE_BONES] = {};
+  static Vec3 s_probeLastPos[SMC_MAX_FACE_BONES] = {};
   __try {
     for (int i = 0; i < s_faceBoneCount; i++) {
       if (!s_faceBones[i].transform)
@@ -1682,6 +1691,34 @@ static void SMCWriteTouchedBones() {
       // not invoke the editor's manual-write observers: those traverse and edit
       // the GUI-owned humanoid/accessory vectors while Stop can replace them.
       if (!UnityObjAlive(s_faceBones[i].transform)) continue;
+      const SMCFaceBone &rest = s_faceRestPose[i];
+      const SMCFaceBone &now = s_faceBones[i];
+      bool affected = fabsf(now.px - rest.px) + fabsf(now.py - rest.py) +
+                          fabsf(now.pz - rest.pz) + fabsf(now.rx - rest.rx) +
+                          fabsf(now.ry - rest.ry) + fabsf(now.rz - rest.rz) +
+                          fabsf(now.rw - rest.rw) >
+                      1e-4f;
+      if (affected) {
+        s_probeAffected++;
+        if (s_probeValid[i]) {
+          Quat curRot = GetBoneLocalRot(s_faceBones[i].transform);
+          Vec3 curPos = GetBoneLocalPos(s_faceBones[i].transform);
+          float d = fabsf(curRot.x - s_probeLastRot[i].x) +
+                    fabsf(curRot.y - s_probeLastRot[i].y) +
+                    fabsf(curRot.z - s_probeLastRot[i].z) +
+                    fabsf(curRot.w - s_probeLastRot[i].w) +
+                    fabsf(curPos.x - s_probeLastPos[i].x) +
+                    fabsf(curPos.y - s_probeLastPos[i].y) +
+                    fabsf(curPos.z - s_probeLastPos[i].z);
+          if (d > 1e-4f) {
+            s_probeBad++;
+            s_probeSample = i;
+          }
+        }
+        s_probeValid[i] = true;
+        s_probeLastRot[i] = Quat{now.rx, now.ry, now.rz, now.rw};
+        s_probeLastPos[i] = Vec3{now.px, now.py, now.pz};
+      }
       Vec3 p{s_faceBones[i].px,s_faceBones[i].py,s_faceBones[i].pz};
       Quat q{s_faceBones[i].rx,s_faceBones[i].ry,s_faceBones[i].rz,s_faceBones[i].rw};
       void *pp[] = {&p};
@@ -1690,6 +1727,15 @@ static void SMCWriteTouchedBones() {
       Invoke(g_transform_set_localRotation,s_faceBones[i].transform,qp);
     }
   } __except (1) {
+  }
+  if (++s_probeFrame >= 60) {
+    if (s_probeBad > 0)
+      Log("[SMC] WARN: expression bones rewritten by another writer %d/%d in 60 "
+          "frames (last #%d, driving=%d frozen=%d)",
+          s_probeBad, s_probeAffected, s_probeSample, (int)s_driving, (int)g_frozen);
+    s_probeFrame = 0;
+    s_probeBad = 0;
+    s_probeAffected = 0;
   }
 }
 
@@ -2062,7 +2108,8 @@ static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
 static void __fastcall HookedSMCUpdate(void *self, float dt, void *method) {
   if (SMCRuntimeClosing()) {if(s_origSMCUpdate)s_origSMCUpdate(self,dt,method);return;}
   std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
-  if (SMCRuntimeClosing() || !SMCEnabled() || !lock.owns_lock() || g_charChanged || SMCCharacterSwitchPending()) {
+  // 同理：拿不到锁不能整段跳过，否则自动眨眼/表情的暂停、MMD 权重都会断帧。
+  if (SMCRuntimeClosing() || !SMCEnabled() || g_charChanged || SMCCharacterSwitchPending()) {
     if (s_origSMCUpdate) s_origSMCUpdate(self, dt, method);
     return;
   }
