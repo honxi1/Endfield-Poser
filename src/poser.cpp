@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "core/base.h"
+#include "core/pose_lock.h"
 #include "core/il2cpp_api.h"
 #include "core/gui_overlay.h"
 #include "core/game_hooks.h"
@@ -76,6 +77,7 @@ static AP_PluginInfo g_info = {
 
 APPLEPIE_PLUGIN_EXPORT AP_PluginInfo *AP_GetPluginInfo() { return &g_info; }
 APPLEPIE_PLUGIN_EXPORT bool AP_PluginEnable() {
+  s_smcEnabled.store(true);
   StartGuiThread();
   return true;
 }
@@ -292,7 +294,7 @@ bool TermsWindowActive() { return TermsPending() || g_termsReview; }
 bool TermsDialogHovered() { return g_termsHover; }
 
 // ---- 每帧更新（阶段 2+：冻结维持、骨骼列表维护、IK 写回、相机）----
-void GameFrameTick() {
+void GameFrameTickBody() {
   // 两道闸门，缺一不可：
   //   1) 没同意协议前不碰游戏；
   //   2) 本线程还没 attach 到 IL2CPP 域时也绝对不能碰 —— 否则 Unity 会
@@ -301,6 +303,11 @@ void GameFrameTick() {
   if (!TermsAccepted() || !g_guiAttached)
     return;
   MaybeInitGameSideOnce(); // 第一次跑到这里时，在已 attach 的 GUI 线程上装 hook / 起 WebUI
+  if(g_characterSwitchDepth.load()!=0)return;
+  if(g_characterCapturePending.exchange(false)) {
+    if(void *controller=g_pendingPlayerController.exchange(nullptr))g_playerController=controller;
+    TryCaptureFromPlayerController();
+  }
   __try {
     // 光标完全交给游戏自己管：按 Alt 显示光标是游戏自带行为，插件不改它的
     // lockState/visible（强行改写会和系统按线程计数的 ShowCursor 状态打架，
@@ -349,6 +356,7 @@ void GameFrameTick() {
             RestoreBlendShapes();
           }
           ReleaseAllGrips(); // 死实例的冻结 grip 也一起清掉，避免每帧去写死对象
+          ResetSMCState(false);
           g_charAnimator = nullptr;
           g_mainCharEntity = nullptr;
           g_charChanged = false; // 死实例不需要保存状态，也别触发重建双消费
@@ -409,9 +417,10 @@ void GameFrameTick() {
     Log("[POSER] GameFrameTick SEH exception caught");
   }
 }
+void GameFrameTick() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); GameFrameTickBody(); }
 
 // 手动刷新：重跑角色骨骼/从骨/形态键重建链（某些场景无法切换角色时用）
-static void RefreshCharacterBones() {
+static void RefreshCharacterBonesBody() {
   if (!g_charAnimator || s_humanBoneCount == 0)
     TryCaptureFromPlayerController();
   bool newChar = g_charChanged;
@@ -428,9 +437,10 @@ static void RefreshCharacterBones() {
     CaptureRestPose();
   Log("[POSER] Manual bone refresh: human=%d", s_humanBoneCount);
 }
+static void RefreshCharacterBones() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); RefreshCharacterBonesBody(); }
 
 // ---- 主面板：控制（冻结）+ 姿态编辑（Task 3.1）----
-void DrawPoserGui() {
+void DrawPoserGuiBody() {
   // 启动方式不对（直启游戏）：只显示一条提示，其它什么都不做。
   // 这时插件的 IL2CPP attach 已被跳过，游戏侧完全没被碰过。
   if (LaunchWarningVisible()) {
@@ -747,10 +757,11 @@ void DrawPoserGui() {
   // 角色列表（多角色编辑：点谁编辑谁）
   DrawRosterPanel();
 }
+void DrawPoserGui() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); DrawPoserGuiBody(); }
 
 // 外部控制（PostMessage WM_APP+90 触发，走普通窗口消息通道）：
 // 1=冻结/解冻 2=T-pose
-static void ExtControl(int code) {
+static void ExtControlBody(int code) {
   // 外部控制（控制文件 / PostMessage）同样要过协议闸门：未同意前不动游戏。
   if (!TermsAccepted())
     return;
@@ -770,11 +781,15 @@ static void ExtControl(int code) {
     break;
   }
 }
+static void ExtControl(int code) { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); ExtControlBody(code); }
 
 // GUI 线程退出前收尾（在已 attach IL2CPP 的线程上执行）：
 // 冻结状态下禁用插件/卸载时，把 Animator、IK、布料物理、形态键都还原回去，
 // 否则头发布料会一直僵在冻结姿态。
 static void OnGuiShutdownRestore() {
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  ResetSMCState();
+  s_smcEnabled.store(false);
   if (!g_frozen)
     return;
   Log("[POSER] shutdown: unfreeze + restore (frozen=%d)", (int)g_frozen);
@@ -814,7 +829,7 @@ static void PoseApplyExtras(const PoseDoc &doc) {
 
 // 控制文件通道：外部（Codex）往 plugin\poser_control.txt 写命令，每帧执行后清空。
 // 命令：toggle / freeze / tpose / reset
-static void ProcessControlFile() {
+static void ProcessControlFileBody() {
   // 未同意协议前连控制文件都不读（它可能触发冻结/解冻等游戏侧动作）
   if (!TermsAccepted())
     return;
@@ -860,8 +875,10 @@ static void ProcessControlFile() {
   fclose(f);
   remove("plugin\\poser_control.txt");
 }
+static void ProcessControlFile() { std::lock_guard<std::recursive_mutex> lock(g_poseMutex); ProcessControlFileBody(); }
 
 static DWORD WINAPI InitThread(LPVOID) {
+  character_face_library::Load();
   LoadPoserConfig();
   g_ikFeatureEnabled = g_ikEnabled; // 配置文件里的 ik_enabled 落到 IK 的功能开关上
   // 注册外部控制回调：PostMessage 通道（只发普通窗口消息，不模拟键盘 / 鼠标输入）
@@ -891,6 +908,7 @@ static DWORD WINAPI InitThread(LPVOID) {
 }
 
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
+  if(reason==DLL_PROCESS_DETACH)s_smcClosing.store(true);
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(0);
     OpenLog("plugin\\poser_log.txt");

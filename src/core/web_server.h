@@ -67,7 +67,7 @@ static nlohmann::json ApiBones() {
 }
 
 // ---- 处理一个请求 ----
-static void HandleRequest(SOCKET c, const std::string &path,
+static void HandleRequestBody(SOCKET c, const std::string &path,
                           const std::string &body) {
   if (path == "/" || path == "/index.html") {
     // 内嵌网页：画布骨骼小人 + 滑条 + 按钮
@@ -395,6 +395,11 @@ static void HandleRequest(SOCKET c, const std::string &path,
     return;
   }
   HttpJson(c, {{"ok", false}, {"err", "unknown api"}});
+}
+
+static void HandleRequest(SOCKET c, const std::string &path, const std::string &body) {
+  std::lock_guard<std::recursive_mutex> lock(g_poseMutex);
+  HandleRequestBody(c,path,body);
 }
 
 static void HandleClient(SOCKET c) {

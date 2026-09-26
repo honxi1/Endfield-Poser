@@ -1,4 +1,5 @@
 #pragma once
+#include "core/pose_lock.h"
 
 // Task 2.1：捕获主角色 Animator/Entity。
 // 通过 MinHook 挂 PlayerController.SetMainCharacter，在角色切换时提取 Entity →
@@ -86,6 +87,8 @@ static void *g_transform_get_localRotation = nullptr;
 static void *g_transform_set_localRotation = nullptr;
 static void *g_transform_get_localPosition = nullptr;
 static void *g_transform_set_localPosition = nullptr;
+static void *g_transform_get_localToWorldMatrix = nullptr;
+static void *g_transform_get_localScale = nullptr;
 static void *g_transform_get_position = nullptr;
 static void *g_transform_set_position = nullptr; // 世界平移（自由相机写）
 static void *g_transform_get_rotation = nullptr; // 世界旋转（gizmo 相机朝向用）
@@ -154,6 +157,8 @@ static void ResolveGameApi() {
           FindMethod(trClass, "get_localPosition", 0);
       g_transform_set_localPosition =
           FindMethod(trClass, "set_localPosition", 1);
+      g_transform_get_localToWorldMatrix = FindMethod(trClass, "get_localToWorldMatrix", 0);
+      g_transform_get_localScale = FindMethod(trClass, "get_localScale", 0);
       g_transform_get_position = FindMethod(trClass, "get_position", 0);
       g_transform_set_position = FindMethod(trClass, "set_position", 1);
       g_transform_get_rotation = FindMethod(trClass, "get_rotation", 0);
@@ -453,14 +458,16 @@ static void InstallSetMainCharacterHook() {
 
     struct SMHook {
       static void Hooked(void *self, void *entity, bool flag) {
-        if (self && !g_playerController) {
-          g_playerController = self;
-          Log("[POSER] Captured PlayerController: %p", self);
+        // Publish an event only. The editor selects the current entity under
+        // the same lock as the facial caches, after the game's switch finishes.
+        ++g_characterSwitchDepth;
+        __try {
+          if (orig_SetMainCharacter) orig_SetMainCharacter(self, entity, flag);
+        } __finally {
+          if (self) g_pendingPlayerController.store(self);
+          g_characterCapturePending.store(true);
+          --g_characterSwitchDepth;
         }
-        if (entity)
-          SetCharacterEntity(entity);
-        if (orig_SetMainCharacter)
-          orig_SetMainCharacter(self, entity, flag);
       }
     };
 
