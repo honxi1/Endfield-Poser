@@ -116,6 +116,19 @@ static void ReleaseGripFor(void *animator) {
   }
 }
 
+// 诊断用：当前登记了哪些 grip（多角色"状态串味"排查）
+static int FrozenGripCount() { return (int)g_frozenGrips.size(); }
+static void *FrozenGripAnimator(int i) {
+  return (i >= 0 && i < (int)g_frozenGrips.size()) ? g_frozenGrips[i].animator
+                                                  : nullptr;
+}
+static bool FrozenGripHas(void *animator) {
+  for (const FrozenGrip &g : g_frozenGrips)
+    if (g.animator == animator)
+      return true;
+  return false;
+}
+
 // 释放全部把手（禁用插件 / 退出时调用）：把所有角色的写者恢复回去
 static void ReleaseAllGrips() {
   for (const FrozenGrip &g : g_frozenGrips)

@@ -40,7 +40,7 @@
 | 包内文件 | 放到 |
 |---|---|
 | `d3dcompiler_47.dll` | 游戏根目录（**先备份游戏自带的那份**） |
-| `vulkan-1.dll`（可选） | 游戏根目录 |
+| `vulkan-1.dll` | 游戏根目录（**同样先备份**） |
 | `plugin\poser.dll` | 游戏根目录的 `plugin\` |
 | `plugin\poser_config.txt` | 游戏根目录的 `plugin\` |
 

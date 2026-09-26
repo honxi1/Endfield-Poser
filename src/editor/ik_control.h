@@ -70,6 +70,24 @@ static void IkSnapToCurrent(IkLimb &L) {
   L.hasTarget = true;
 }
 
+// 换角色 / 换编辑目标时调用：控制器的**骨骼指针每帧会重绑**（IkRefresh），但
+// target/pole 是世界坐标快照，不重吸附的话手柄会停在上一个角色身上（表现就是
+// "控制器没适配新角色"）。这里：
+//   - 启用中的肢体 → 重新吸附到新角色当前姿态（不跳变，接着拖就行）
+//   - 没启用的肢体 → 清掉 hasTarget，避免画出上一个角色位置的手柄
+//   - 选中状态清空（选中的那个肢体的指针已经不属于新角色）
+static void IkOnCharacterChanged() {
+  g_selectedIk = -1;
+  IkRefresh();
+  for (IkLimb &L : g_ikLimbs) {
+    if (L.active && L.enabled)
+      IkSnapToCurrent(L);
+    else
+      L.hasTarget = false;
+  }
+  Log("[IK] controllers rebound to the new character");
+}
+
 static void IkSolveLimb(IkLimb &L) {
   if (!L.active || !L.enabled)
     return;

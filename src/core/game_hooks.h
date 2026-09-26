@@ -646,6 +646,12 @@ static void SetBoneWorldPos(void *t, Vec3 p) {
     Invoke(g_transform_set_position, t, params);
   } __except (1) {
   }
+  // 世界坐标写入同样算"手动编辑"：不触发钩子的话，IK 解算 / gizmo 的结果不会进
+  // 冻结快照，切角色时保存的就是旧姿势（实测：IK 拖动切走再切回来动作没了）。
+  if (g_boneWriteHook)
+    g_boneWriteHook(t);
+  if (g_boneWriteHook2)
+    g_boneWriteHook2(t);
 }
 
 static void SetBoneWorldRot(void *t, Quat q) {
@@ -656,4 +662,9 @@ static void SetBoneWorldRot(void *t, Quat q) {
     Invoke(g_transform_set_rotation, t, params);
   } __except (1) {
   }
+  // 同上：IK 解算就是走这个函数写骨的，必须同步进快照（见上一条注释）。
+  if (g_boneWriteHook)
+    g_boneWriteHook(t);
+  if (g_boneWriteHook2)
+    g_boneWriteHook2(t);
 }

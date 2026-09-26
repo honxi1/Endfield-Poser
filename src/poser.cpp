@@ -19,6 +19,7 @@
 #include "editor/rig_gizmo.h"
 #include "editor/panel_bones.h"
 #include "editor/ik_control.h"
+#include "game/roster.h" // 多角色列表（依赖 ik_control.h 的 IkOnCharacterChanged）
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
 #include "editor/panel_agreement.h"
@@ -399,6 +400,7 @@ void GameFrameTick() {
       if (!s_restCaptured)
         CaptureRestPose();  // 角色最初姿态 = A-pose 基线
       RestoreCharStateOnSwitch(); // 冻过的角色：恢复姿态并重新压制写者；没冻过：保持默认
+      IkOnCharacterChanged();     // IK 控制器跟着换到新角色（目标点重新吸附）
     }
     // 冻结态维持：每帧强制关闭 Animator/动画组件/IK 组件（游戏会重新启用）
     MaintainFreeze();
@@ -542,6 +544,13 @@ void DrawPoserGui() {
         ImGui::SetTooltip(u8"\u518d\u6b21\u67e5\u770b\u300a\u7528\u6237\u534f\u8bae\u4e0e"
                           u8"\u514d\u8d23\u58f0\u660e\u300b\uff08\u53ea\u8bfb\uff0c"
                           u8"\u4e0d\u5f71\u54cd\u4f7f\u7528\uff09");
+      ImGui::SameLine();
+      if (ImGui::SmallButton(u8"\u626b\u63cf\u89d2\u8272"))
+        ScanSceneForCharacters();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"\u626b\u63cf\u573a\u4e0a\u6240\u6709 Animator \u4e0e\u7ec4\u4ef6\uff0c"
+                          u8"\u5199\u5165 plugin\\poser_roster.txt\uff08\u591a\u89d2\u8272"
+                          u8"\u7f16\u8f91\u7684\u63a2\u9488\uff09");
     }
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
@@ -585,6 +594,12 @@ void DrawPoserGui() {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u5b9e\u9a8c\u6027\uff1a\u53ef\u4ee5\u9009\u4e2d / \u62d6\u52a8"
                         u8"\u624b\u67c4\uff1b\u9aa8\u9abc\u8ddf\u968f\u5c1a\u672a\u5b8c\u6210");
+    ImGui::SameLine();
+    ImGui::Checkbox(u8"\u89d2\u8272\u5217\u8868", &g_showRoster);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip(u8"\u5217\u51fa\u573a\u4e0a\u7684\u89d2\u8272\uff0c\u70b9\u8c01"
+                        u8"\u7f16\u8f91\u8c01\uff08\u4e0d\u6539\u53d8\u6e38\u620f\u81ea\u5df1"
+                        u8"\u64cd\u63a7\u7684\u89d2\u8272\uff09");
     if (g_fullBones && s_allBones.empty())
       RebuildAllBones();
     if (!g_fullBones && FindTransformIndex(g_selectedTransform) < 0)
@@ -731,6 +746,8 @@ void DrawPoserGui() {
   // 骨骼层级面板（Blender 风格：树 + 搜索 + 选中骨参数）
   DrawBoneTreePanel();
 
+  // 角色列表（多角色编辑：点谁编辑谁）
+  DrawRosterPanel();
 }
 
 // 外部控制（PostMessage WM_APP+90 触发，走普通窗口消息通道）：

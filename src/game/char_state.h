@@ -51,6 +51,19 @@ static std::string CurrentCharModelKey() {
   return s;
 }
 
+// 角色实例级 key：模型名 + Animator 指针。
+// 只用模型名会在"同屏两个同名角色"时串味（两个实例共用一份冻结状态/姿势），
+// 加上实例指针就能把它们分开。状态表只在内存里，不落盘，所以不担心跨版本兼容。
+static std::string CurrentCharKey() {
+  std::string k = CurrentCharModelKey();
+  if (g_charAnimator) {
+    char b[32] = {};
+    snprintf(b, sizeof(b), "@%p", g_charAnimator);
+    k += b;
+  }
+  return k;
+}
+
 // 把内存里的快照打包成 PoseDoc（不访问游戏对象，安全用于换角色时）
 static PoseDoc BuildLivePoseDoc(const char *name) {
   PoseDoc doc;
@@ -79,29 +92,52 @@ static PoseDoc BuildLivePoseDoc(const char *name) {
 
 // 角色切换：先保存"旧角色"的状态（必须在重建骨骼列表之前调用）
 static void SaveCharStateOnSwitch() {
-  if (g_curCharKey.empty())
+  // 存"正在离开的那个角色"：优先用上次恢复时记下的实例 key（那时 g_charAnimator 还是它），
+  // 没记过就用当前指针现算（切换是我们主动发起时仍指向旧角色）。
+  std::string key = !g_curCharKey.empty() ? g_curCharKey : CurrentCharKey();
+  Log("[CHAR] switch-save: key='%s' frozen=%d states=%d", key.c_str(),
+      (int)g_frozen, (int)g_charStates.size());
+  if (key.empty())
     return;
   if (!g_frozen) {
-    g_charStates.erase(g_curCharKey); // 没冻结就不记（切回来保持默认）
+    g_charStates.erase(key); // 没冻结就不记（切回来保持默认）
     return;
   }
   CharFreezeState st;
   st.frozen = true;
-  st.pose = BuildLivePoseDoc(g_curCharKey.c_str());
-  g_charStates[g_curCharKey] = st;
+  st.pose = BuildLivePoseDoc(key.c_str());
+  g_charStates[key] = st;
   Log("[CHAR] saved frozen state for '%s' (%d bones, %d accessory)",
-      g_curCharKey.c_str(), (int)st.pose.bones.size(),
-      (int)st.pose.accBones.size());
+      key.c_str(), (int)st.pose.bones.size(), (int)st.pose.accBones.size());
 }
 
 // 角色切换：新角色已重建完成后调用；冻过就恢复，否则保持默认
 static void RestoreCharStateOnSwitch() {
-  g_curCharKey = CurrentCharModelKey();
+  g_curCharKey = CurrentCharKey(); // 实例级 key（模型名 + Animator 指针）
   auto it = g_charStates.find(g_curCharKey);
+  Log("[CHAR] switch-restore: key='%s' found=%d tableFrozen=%d g_frozen(before)=%d",
+      g_curCharKey.c_str(), it != g_charStates.end() ? 1 : 0,
+      (it != g_charStates.end() && it->second.frozen) ? 1 : 0, (int)g_frozen);
+  // 状态表全量（最多 8 条）：用来确认"每个角色的独立状态"到底存了谁
+  {
+    int shown = 0;
+    for (auto &kv : g_charStates) {
+      if (shown++ >= 8)
+        break;
+      Log("[CHAR]   table['%s'] frozen=%d bones=%d", kv.first.c_str(),
+          (int)kv.second.frozen, (int)kv.second.pose.bones.size());
+    }
+  }
   if (g_curCharKey.empty() || it == g_charStates.end() || !it->second.frozen) {
     if (g_frozen)
       Log("[CHAR] '%s' has no saved frozen state -> leaving it unfrozen",
           g_curCharKey.c_str());
+    // 保险：新目标不该被"残留的压制"按着。
+    // 场景：A 冻结时登记了 grip（压制它的 Animator/动画组件/IK），切到 B 时如果
+    // B 的指针出现在 grip 表里（同名模型复用同一批组件、或之前误登记过），
+    // B 就会被压住 —— 表现就是"切过去 B 也冻住了/像继承了 A 的状态"。
+    // 这里显式把该目标的 grip 释放掉（没有就什么都不做）。
+    ReleaseGripFor(g_charAnimator);
     g_frozen = false;
     return;
   }
