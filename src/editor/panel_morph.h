@@ -10,6 +10,8 @@
 
 #include <cstring>
 
+// 窗口开关定义在 config.h（g_showMorph）—— 它会被写回 poser_config.txt
+
 static char g_morphFilter[64] = "";
 
 // SMC（游戏原生表情，参照 EIEM smc_face.h）区块：口型 + 表情滑条 0-1

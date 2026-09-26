@@ -25,6 +25,11 @@ static bool g_clickThrough = true; // 默认常驻 + 真穿透（实测手感更
 // ik_enabled=1：打开实验性的 IK 控制器（编辑器的"控制器"面板）。
 // 该功能尚未完成（能选中/拖动手柄，骨骼跟随还没做好），默认关闭；面板里也能勾。
 static bool g_ikEnabled = false;
+// 窗口开关：主面板「窗口」组里的勾选状态，写回 poser_config.txt（下次进游戏保持）
+static bool g_showBoneParams = true;  // 核心编辑窗（选中骨参数 + IK 控制器面板），默认开
+static bool g_showLibrary = false;    // 姿态库
+static bool g_showMorph = false;      // 形态键
+static bool g_showRoster = false;     // 角色列表
 // overlay_mode：0=auto（检测到 XXMI/3DMigoto 的 d3d11.dll 时用分层窗口，否则 DComp）
 //               1=强制 DComp   2=强制分层窗口（UpdateLayeredWindow，兼容性最好）
 static int g_overlayMode = 0;
@@ -383,6 +388,10 @@ static bool LoadPoserConfig() {
       ParseHotkey(val, &g_freezeVK, &g_freezeCtrl, 'P', false);
     else if (strcmp(key, "click_through") == 0)   g_clickThrough = (strtoul(val, nullptr, 0) != 0);
     else if (strcmp(key, "ik_enabled") == 0)      g_ikEnabled = (strtoul(val, nullptr, 0) != 0);
+    else if (strcmp(key, "show_bone_params") == 0) g_showBoneParams = (strtoul(val, nullptr, 0) != 0);
+    else if (strcmp(key, "show_library") == 0)     g_showLibrary = (strtoul(val, nullptr, 0) != 0);
+    else if (strcmp(key, "show_morph") == 0)       g_showMorph = (strtoul(val, nullptr, 0) != 0);
+    else if (strcmp(key, "show_roster") == 0)      g_showRoster = (strtoul(val, nullptr, 0) != 0);
     else if (strcmp(key, "terms_version") == 0)
       g_termsAcceptedVersion = (int)strtoul(val, nullptr, 0);
     else if (strcmp(key, "overlay_mode") == 0)    g_overlayMode = (int)strtoul(val, nullptr, 0);

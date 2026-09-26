@@ -399,8 +399,6 @@ static void RosterSwitchEditTarget(int idx) {
     Log("[ROSTER]   grip#%d animator=%p", gi, FrozenGripAnimator(gi));
 }
 
-static bool g_showRoster = false; // 主面板勾选「角色列表」
-
 static void DrawRosterPanel() {
   if (!g_showRoster)
     return;

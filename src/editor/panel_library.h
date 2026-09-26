@@ -10,6 +10,8 @@
 #include "game/skeleton.h"
 #include "math/pose_file.h"
 
+// 窗口开关定义在 config.h（g_showLibrary）—— 它会被写回 poser_config.txt
+
 #include <cstdio>
 #include <string>
 #include <vector>

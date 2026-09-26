@@ -59,9 +59,20 @@ static void SetGuiShutdownFn(void (*fn)()) { g_guiShutdownFn = fn; }
 static HWND g_gameHwnd = nullptr;
 static HWND g_guiHwnd = nullptr;
 
-// 图钉：锁定所有面板窗口位置（拖火柴人/滑块时窗口不会跟着动）。
-// 放在这里是因为 poser.cpp 与 editor/panel_*.h 都要用它。
-static bool g_pinPanels = true;
+// ---- 窗口布局 ----
+// 位置 / 尺寸 / 折叠状态由 ImGui 记到 plugin\poser_ui.ini（见下面 io.IniFilename）。
+// 「重置窗口位置」按钮删掉该文件，并把这一帧标记为"重排"：这一帧各窗口用
+// ImGuiCond_Always 回到默认位置，下一帧恢复 FirstUseEver（继续记录用户拖到哪）。
+static bool g_resetWindowLayout = false;
+static ImGuiCond LayoutCond() {
+  return g_resetWindowLayout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+}
+static void ResetWindowLayout() {
+  remove("plugin\\poser_ui.ini");
+  g_resetWindowLayout = true;
+  Log("[GUI] window layout reset to defaults");
+}
+
 
 // ---- 输入路由状态 ----
 // 鼠标只在「指针落在面板/旋转盘上 且 游戏光标已呼出」时由覆盖层吃掉，其余一律穿透给
@@ -891,6 +902,24 @@ static void AddUiFont(ImGuiIO &io) {
   Log("[GUI] WARN: msyh.ttc not found, Chinese text may not render");
 }
 
+// 游戏进程已经跑了多久（毫秒）。attach 需要一个"运行时确实起来了"的旁证：
+// 域指针非空并不代表 GC 的线程注册就绪，早一步就是
+// "Fatal error in GC / Collecting from unknown thread"（实测踩过两次）。
+static unsigned long long ProcessAgeMs() {
+  FILETIME c, e, k, u;
+  if (!GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u))
+    return 0;
+  ULARGE_INTEGER ct;
+  ct.LowPart = c.dwLowDateTime;
+  ct.HighPart = c.dwHighDateTime;
+  FILETIME now;
+  GetSystemTimeAsFileTime(&now);
+  ULARGE_INTEGER nt;
+  nt.LowPart = now.dwLowDateTime;
+  nt.HighPart = now.dwHighDateTime;
+  return (nt.QuadPart - ct.QuadPart) / 10000ULL; // 100ns -> ms
+}
+
 static DWORD WINAPI GuiThread(LPVOID) {
   // 【attach 时机很关键】先等 Unity 主窗口出现（最多 60 秒），再确认 IL2CPP 域就绪，
   // 最后才 attach。GameAssembly.dll 加载 ≠ 运行时可用：在 GC 的线程注册就绪之前调用
@@ -919,18 +948,39 @@ static DWORD WINAPI GuiThread(LPVOID) {
     Log("[GUI] launch source not trusted -> skip IL2CPP attach; plugin stays inert");
   } else if (il2cpp_domain_get && il2cpp_thread_attach) {
     void *domain = nullptr;
-    for (int i = 0; i < 30 && !domain; i++) {
+    for (int i = 0; i < 60 && !domain; i++) {
       domain = il2cpp_domain_get();
       if (!domain)
         Sleep(1000);
     }
     if (!domain) {
-      Log("[GUI] IL2CPP domain not ready after 30s -> overlay disabled (请通过游戏启动器启动)");
+      Log("[GUI] IL2CPP domain not ready after 60s -> overlay disabled (请通过游戏启动器启动)");
       return 0;
     }
+    Log("[GUI] domain ready at process age %llu ms; waiting for assemblies + grace",
+        ProcessAgeMs());
+    // 再确认程序集已经加载（比"域指针非空"更靠后的一步）
+    for (int i = 0; i < 40; i++) {
+      size_t ac = 0;
+      void **asms = il2cpp_domain_get_assemblies(domain, &ac);
+      if (asms && ac > 0)
+        break;
+      Sleep(500);
+    }
+    // 宽限期：进程太年轻就再等（GC 线程注册通常在启动后十几秒内完成）。
+    // 目标：attach 时进程至少活了 20 秒，且域出现后再过 5 秒。
+    const unsigned long long kMinAgeMs = 20000ULL;
+    for (int i = 0; i < 60; i++) {
+      unsigned long long age = ProcessAgeMs();
+      if (age >= kMinAgeMs)
+        break;
+      Sleep(500);
+    }
+    Sleep(5000);
+    Log("[GUI] attaching to IL2CPP domain at process age %llu ms", ProcessAgeMs());
     il2cpp_thread_attach(domain);
     g_guiAttached = true; // 之后 poser.cpp 才允许碰游戏对象
-    Log("[GUI] attached to IL2CPP domain");
+    Log("[GUI] attached to IL2CPP domain (age %llu ms)", ProcessAgeMs());
   }
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
@@ -1007,7 +1057,9 @@ static DWORD WINAPI GuiThread(LPVOID) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO &io = ImGui::GetIO();
-  io.IniFilename = nullptr;
+  // 窗口位置/折叠状态记在插件自己的目录里（不往游戏根目录丢 imgui.ini）。
+  // 想回到默认布局：主面板「重置窗口位置」按钮（删掉这个文件并重排一次）。
+  io.IniFilename = "plugin\\poser_ui.ini";
   io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard; // 关键盘导航，避免输入框被自动聚焦
   io.MouseDrawCursor = false;
   ImGui::StyleColorsDark();
@@ -1155,6 +1207,7 @@ static DWORD WINAPI GuiThread(LPVOID) {
     __try { DrawPoserGui(); } __except (1) {
       Log("[GUI] DrawPoserGui exception code=0x%X", GetExceptionCode());
     }
+    g_resetWindowLayout = false; // 重排只生效一帧
 
     // ---- 输入路由 + 文字输入焦点 ----
     {

@@ -9,6 +9,7 @@
 #include "core/il2cpp_api.h"
 #include "core/gui_overlay.h"
 #include "core/game_hooks.h"
+#include "config.h" // 窗口开关等配置在这里（必须早于下面用到它的面板头）
 #include "game/skeleton.h"
 #include "game/accessory.h"
 #include "game/freeze.h"
@@ -23,7 +24,6 @@
 #include "editor/panel_library.h"
 #include "editor/panel_morph.h"
 #include "editor/panel_agreement.h"
-#include "config.h"
 
 // 手动刷新骨骼（面板按钮 / WebUI /api/refresh 共用）
 // 面板里的「打开日志」：弹资源管理器并选中 poser_log.txt —— 让非技术用户
@@ -95,8 +95,9 @@ APPLEPIE_PLUGIN_EXPORT int AP_GetHotkeys(AP_HotkeyInfo *out, int max) {
   // 免得管理器里出现一个按了没反应的键；实现好了再加回来。
   const int n = 2;
   if (max < n) return n;
-  out[0] = {"Toggle Poser GUI", "gui_toggle_key", g_guiToggleVK};
-  out[1] = {"Freeze / Unfreeze", "freeze_key", g_freezeVK};
+  // 名字显示在插件管理器的热键列表里，用中文和其它面板一致
+  out[0] = {u8"\u547c\u51fa / \u9690\u85cf\u9762\u677f", "gui_toggle_key", g_guiToggleVK};
+  out[1] = {u8"\u51bb\u7ed3 / \u89e3\u51bb", "freeze_key", g_freezeVK};
   return n;
 }
 APPLEPIE_PLUGIN_EXPORT void AP_SetLanguage(const char *) {}
@@ -514,7 +515,7 @@ void DrawPoserGui() {
   } __except (1) {
     Log("[POSER] IK controllers exception code=0x%X", GetExceptionCode());
   }
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(10, 10), LayoutCond());
   // 见 panel_bones.h：AlwaysAutoResize 与 SetNextItemWidth(-1) 并用时需要最小宽度，
   // 否则窗口宽度塌陷、右侧标签（步长等）被挤出可视区。
   ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 100.0f),
@@ -522,7 +523,7 @@ void DrawPoserGui() {
   if (ImGui::Begin("Endfield Poser", nullptr,
                    ImGuiWindowFlags_NoCollapse |
                        ImGuiWindowFlags_AlwaysAutoResize |
-                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
+                       0)) {
     ImGui::Text("v%s", POSER_VERSION);
     // 当前实际生效的热键（配置可能是老版本留下的值，别让用户以为"默认就是 L/P"）
     {
@@ -545,12 +546,11 @@ void DrawPoserGui() {
                           u8"\u514d\u8d23\u58f0\u660e\u300b\uff08\u53ea\u8bfb\uff0c"
                           u8"\u4e0d\u5f71\u54cd\u4f7f\u7528\uff09");
       ImGui::SameLine();
-      if (ImGui::SmallButton(u8"\u626b\u63cf\u89d2\u8272"))
-        ScanSceneForCharacters();
+      if (ImGui::SmallButton(u8"\u91cd\u7f6e\u7a97\u53e3"))
+        ResetWindowLayout();
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(u8"\u626b\u63cf\u573a\u4e0a\u6240\u6709 Animator \u4e0e\u7ec4\u4ef6\uff0c"
-                          u8"\u5199\u5165 plugin\\poser_roster.txt\uff08\u591a\u89d2\u8272"
-                          u8"\u7f16\u8f91\u7684\u63a2\u9488\uff09");
+        ImGui::SetTooltip(u8"\u628a\u6240\u6709\u9762\u677f\u7a97\u53e3\u56de\u5230\u9ed8"
+                          u8"\u8ba4\u4f4d\u7f6e");
     }
     // 只在真的装了 XXMI/3DMigoto 时才提示撞键，避免没装的用户被无谓打扰
     if (g_hotkeyConflict && g_xxmiDetected)
@@ -566,22 +566,10 @@ void DrawPoserGui() {
                           u8"\u4f60\u60f3\u7528\u7684\u7ec4\u5408\uff08\u81ea\u52a8"
                           u8"\u5199\u56de poser_config.txt\uff09");
     }
-    ImGui::SameLine();
-    ImGui::Checkbox(u8"\u56fe\u9489", &g_pinPanels);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"\u9501\u5b9a\u9762\u677f\u4f4d\u7f6e\uff1a\u62d6\u706b\u67f4\u4eba\u65f6\u7a97\u53e3\u4e0d\u8ddf\u7740\u52a8\uff1b\u53d6\u6d88\u540e\u53ef\u62d6\u6807\u9898\u79fb\u52a8");
-    ImGui::Separator();
-    ImGui::Text("Animator=%p  Bones=%d", g_charAnimator, s_humanBoneCount);
-    ImGui::Separator();
     ImGui::Checkbox(u8"\u663e\u793a\u9aa8\u9abc", &g_showBones);
-    ImGui::SameLine();
-    ImGui::Checkbox(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"\u6253\u5f00\u9aa8\u9abc\u53c2\u6570\u7a97\u53e3\uff08\u65cb\u8f6c/\u4f4d\u7f6e\u6ed1\u6761\u3001\u6570\u503c\u8f93\u5165\u3001\u590d\u4f4d\u3001\u64a4\u9500\uff09");
     ImGui::SameLine();
     ImGui::TextDisabled(
         g_selectedName[0] ? g_selectedName : u8"\u672a\u9009\u4e2d");
-    ImGui::Text("Bones=%d  Overlay: %s", s_humanBoneCount, g_overlayStatus);
     ImGui::Checkbox(u8"\u5168\u91cf\u9aa8\u9abc(\u5fae\u8c03)", &g_fullBones);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u9ed8\u8ba4\u53ea\u663e\u793a\u4e3b\u8981\u9aa8\u9abc\uff1b\u52fe\u9009\u540e\u53e0\u52a0\u5c42\u5c55\u793a/\u53ef\u62fe\u53d6\u6240\u6709\u9aa8\u9abc\uff08\u542b\u624b\u6307\u7b49\uff09\uff0c\u7528\u4e8e\u7cbe\u7ec6\u5fae\u8c03\u3002");
@@ -594,18 +582,37 @@ void DrawPoserGui() {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(u8"\u5b9e\u9a8c\u6027\uff1a\u53ef\u4ee5\u9009\u4e2d / \u62d6\u52a8"
                         u8"\u624b\u67c4\uff1b\u9aa8\u9abc\u8ddf\u968f\u5c1a\u672a\u5b8c\u6210");
-    ImGui::SameLine();
-    ImGui::Checkbox(u8"\u89d2\u8272\u5217\u8868", &g_showRoster);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip(u8"\u5217\u51fa\u573a\u4e0a\u7684\u89d2\u8272\uff0c\u70b9\u8c01"
-                        u8"\u7f16\u8f91\u8c01\uff08\u4e0d\u6539\u53d8\u6e38\u620f\u81ea\u5df1"
-                        u8"\u64cd\u63a7\u7684\u89d2\u8272\uff09");
+    // ---- 窗口开关集中在这里 ----
+    // 勾上就出现对应窗口；窗口右上角的 × 也能关（两者是同一个状态）。
+    if (ImGui::CollapsingHeader(u8"\u7a97\u53e3")) {
+      ImGui::Checkbox(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"\u9009\u4e2d\u9aa8\u7684\u65cb\u8f6c/\u4f4d\u7f6e\u53c2\u6570"
+                          u8"\uff08\u6ed1\u6761\u3001\u6570\u503c\u3001\u590d\u4f4d\u3001"
+                          u8"\u9501\u5b9a\uff09");
+      ImGui::SameLine();
+      ImGui::Checkbox(u8"\u59ff\u6001\u5e93", &g_showLibrary);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"\u59ff\u6001\u9884\u8bbe\u7684\u4fdd\u5b58 / \u8f7d\u5165 / "
+                          u8"\u5220\u9664");
+      ImGui::SameLine();
+      ImGui::Checkbox(u8"\u5f62\u6001\u952e", &g_showMorph);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"\u9762\u90e8 BlendShape + \u6e38\u620f\u539f\u751f SMC "
+                          u8"\u8868\u60c5\u6ed1\u6761");
+      ImGui::Checkbox(u8"\u89d2\u8272\u5217\u8868", &g_showRoster);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"\u573a\u4e0a\u89d2\u8272\u5217\u8868\uff0c\u70b9\u300c"
+                          u8"\u7f16\u8f91\u300d\u5207\u6362\u8981\u6446\u7684\u89d2\u8272");
+    }
     if (g_fullBones && s_allBones.empty())
       RebuildAllBones();
     if (!g_fullBones && FindTransformIndex(g_selectedTransform) < 0)
       SelectTransform(nullptr, nullptr);
     ImGui::Separator();
-    if (ImGui::Button(g_frozen ? "Unfreeze" : "Freeze Character")) {
+    // 中文标签 + 固定宽度：切换状态时按钮不会跳宽度
+    if (ImGui::Button(g_frozen ? u8"\u89e3\u9664\u51bb\u7ed3" : u8"\u51bb\u7ed3\u89d2\u8272",
+                       ImVec2(110.0f, 0.0f))) {
       Log("[GUI] Freeze button clicked (frozen=%d animator=%p bones=%d)",
           (int)g_frozen, g_charAnimator, s_humanBoneCount);
       if (g_frozen) {
@@ -636,56 +643,44 @@ void DrawPoserGui() {
         SetAllPhysicsEnabled(true);
       }
     }
-    // 快捷键一览（默认展开，可折叠）
-    ImGui::Separator();
-    if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e",
-                                ImGuiTreeNodeFlags_DefaultOpen)) {
-      char vkbuf[16];
-      ImGui::Text(u8"\u9762\u677f\u663e\u793a/\u9690\u85cf\uff1a%s",
-                  VkName(g_guiToggleVK, vkbuf, sizeof(vkbuf)));
-      char fbuf[16];
-      ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1a%s",
-                  VkName(g_freezeVK, fbuf, sizeof(fbuf)));
-      ImGui::Text(u8"\u9762\u677f\u4ea4\u4e92\uff1a\u6309\u4f4f Alt\uff08\u6216\u6e38\u620f\u653e\u5f00\u5149\u6807\u65f6\u76f4\u63a5\u70b9\uff09");
-    }
-    // 根骨骼位置微调（整体位移；冻结态直接写回）
-    void *rootT = nullptr;
-    for (size_t i = 0; i < s_allBones.size(); i++)
-      if (s_allBones[i].parentIdx < 0) {
-        rootT = s_allBones[i].transform;
-        break;
+    // ---- 调试（默认收起）----
+    if (ImGui::CollapsingHeader(u8"\u8c03\u8bd5")) {
+      if (ImGui::SmallButton(u8"\u626b\u63cf\u89d2\u8272"))
+        ScanSceneForCharacters();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(u8"\u626b\u63cf\u573a\u4e0a\u6240\u6709 Animator \u4e0e\u7ec4\u4ef6\uff0c"
+                          u8"\u5199\u5165 plugin\\poser_roster.txt");
+      ImGui::Text(u8"\u9aa8\u9abc\u6570 %d   Animator %p   \u8986\u76d6\u5c42 %s",
+                  s_humanBoneCount, g_charAnimator, g_overlayStatus);
+      if (ImGui::CollapsingHeader(u8"\u5feb\u6377\u952e")) {
+        char vkbuf[16];
+        ImGui::Text(u8"\u9762\u677f\u663e\u793a/\u9690\u85cf\uff1a%s",
+                    VkName(g_guiToggleVK, vkbuf, sizeof(vkbuf)));
+        char fbuf[16];
+        ImGui::Text(u8"\u51bb\u7ed3 / \u89e3\u51bb\uff1a%s",
+                    VkName(g_freezeVK, fbuf, sizeof(fbuf)));
+        ImGui::Text(u8"\u9762\u677f\u4ea4\u4e92\uff1a\u6309\u4f4f Alt\uff08\u6216\u6e38\u620f"
+                    u8"\u653e\u5f00\u5149\u6807\u65f6\u76f4\u63a5\u70b9\uff09");
       }
-    if (!rootT && s_humanBoneCount > 0)
-      rootT = s_humanBones[0].transform; // 回退：Hips
-    if (g_frozen && rootT) {
-      Vec3 lp = GetBoneLocalPos(rootT);
-      // 必须用连续数组：SliderFloat3/InputFloat3 是按 &v[0] 连续写 3 个 float，
-      // 之前用三个独立局部变量（&vx/&vy/&vz）不保证在栈上相邻 → 显示与写回错位。
-      float rp[3] = {lp.x, lp.y, lp.z};
-      bool changed = false;
-      ImGui::TextDisabled(u8"\u4eba\u7269\u4f4d\u7f6e (Root XYZ)");
-      ImGui::SetNextItemWidth(-1);
-      changed |= ImGui::SliderFloat3(u8"##rootpos", rp, -10.0f, 10.0f, "%.2f");
-      ImGui::SetNextItemWidth(-1);
-      changed |= ImGui::InputFloat3(u8"##rootposin", rp, "%.4f");
-      static float s_rootStep = 0.05f;
-      ImGui::TextDisabled(u8"\u6b65\u957f");
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(90);
-      ImGui::InputFloat(u8"##rootstep", &s_rootStep, 0.0f, 0.0f, "%.3f");
-      ImGui::TextDisabled("X");
-      ImGui::SameLine();
-      changed |= AxisStepper("rootx", &rp[0], s_rootStep);
-      ImGui::SameLine();
-      ImGui::TextDisabled("Y");
-      ImGui::SameLine();
-      changed |= AxisStepper("rooty", &rp[1], s_rootStep);
-      ImGui::SameLine();
-      ImGui::TextDisabled("Z");
-      ImGui::SameLine();
-      changed |= AxisStepper("rootz", &rp[2], s_rootStep);
-      if (changed) {
-        SetBoneLocalPos(rootT, Vec3{rp[0], rp[1], rp[2]});
+    }
+    // 窗口开关变了就写回配置（点窗口右上角的 × 也会走到这里）
+    {
+      static bool s_savedWin[4] = {true, false, false, false};
+      if (s_savedWin[0] != g_showBoneParams) {
+        s_savedWin[0] = g_showBoneParams;
+        SaveConfigValue("show_bone_params", g_showBoneParams ? "1" : "0");
+      }
+      if (s_savedWin[1] != g_showLibrary) {
+        s_savedWin[1] = g_showLibrary;
+        SaveConfigValue("show_library", g_showLibrary ? "1" : "0");
+      }
+      if (s_savedWin[2] != g_showMorph) {
+        s_savedWin[2] = g_showMorph;
+        SaveConfigValue("show_morph", g_showMorph ? "1" : "0");
+      }
+      if (s_savedWin[3] != g_showRoster) {
+        s_savedWin[3] = g_showRoster;
+        SaveConfigValue("show_roster", g_showRoster ? "1" : "0");
       }
     }
   }
@@ -718,30 +713,33 @@ void DrawPoserGui() {
     ImGui::PopStyleVar();
   }
 
-  // 姿态预设库（独立窗口）
-  ImGui::SetNextWindowPos(ImVec2(340, 500), ImGuiCond_FirstUseEver);
-  // 与主面板一致：宽度有下限、高度自适应，避免内容被截断
-  ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 120.0f),
-                                      ImVec2(FLT_MAX, FLT_MAX));
-  if (ImGui::Begin(u8"\u59ff\u6001\u5e93", nullptr,
-                   ImGuiWindowFlags_NoCollapse |
-                       ImGuiWindowFlags_AlwaysAutoResize |
-                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
-    DrawLibraryPanel();
+  // 姿态预设库（独立窗口；由主面板「窗口」组开关控制）
+  if (g_showLibrary) {
+    ImGui::SetNextWindowPos(ImVec2(340, 500), LayoutCond());
+    // 与主面板一致：宽度有下限、高度自适应，避免内容被截断
+    ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 120.0f),
+                                        ImVec2(FLT_MAX, FLT_MAX));
+    if (ImGui::Begin(u8"\u59ff\u6001\u5e93", &g_showLibrary,
+                     ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_AlwaysAutoResize |
+                         0)) {
+      DrawLibraryPanel();
+    }
+    ImGui::End();
   }
-  ImGui::End();
 
-  // 形态键面板（面部 BlendShape，Task 4.1）
-  ImGui::SetNextWindowPos(ImVec2(680, 10), ImGuiCond_FirstUseEver);
-  // 形态键面板内部用 BeginChild(size=(0,0)) 填满可用空间，和 AlwaysAutoResize 冲突
-  // （子区域会塌成 0 → 内容看不见），所以这里保持固定初始尺寸、允许手动调整。
-  ImGui::SetNextWindowSize(ImVec2(360, 320), ImGuiCond_FirstUseEver);
-  if (ImGui::Begin(u8"\u5f62\u6001\u952e", nullptr,
-                   ImGuiWindowFlags_NoCollapse |
-                       (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
-    DrawMorphPanel();
+  // 形态键面板（面部 BlendShape；由主面板「窗口」组开关控制）
+  if (g_showMorph) {
+    ImGui::SetNextWindowPos(ImVec2(680, 10), LayoutCond());
+    // 形态键面板内部用 BeginChild(size=(0,0)) 填满可用空间，和 AlwaysAutoResize 冲突
+    // （子区域会塌成 0 → 内容看不见），所以这里保持固定初始尺寸、允许手动调整。
+    ImGui::SetNextWindowSize(ImVec2(360, 320), LayoutCond());
+    if (ImGui::Begin(u8"\u5f62\u6001\u952e", &g_showMorph,
+                     ImGuiWindowFlags_NoCollapse)) {
+      DrawMorphPanel();
+    }
+    ImGui::End();
   }
-  ImGui::End();
 
   // 骨骼层级面板（Blender 风格：树 + 搜索 + 选中骨参数）
   DrawBoneTreePanel();

@@ -132,6 +132,13 @@ endfield-poser/
 
 遇到问题欢迎带上 `plugin\poser_log.txt` 与复现步骤，在 issue 或群里反馈。
 
+## 致谢
+
+感谢以下贡献者：
+
+- [White-NX](https://github.com/White-NX) —— XXMI / 3DMigoto 兼容的 layered-window overlay 实现；
+- [Nordlicht S](https://github.com/NordlichtS) —— 安全安装 / 卸载脚本（备份、还原与路径校验）。
+
 ## 用户协议与免责声明
 
 <details>

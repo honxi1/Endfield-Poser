@@ -16,7 +16,6 @@
 #include <cstring>
 #include <vector>
 
-static bool g_showBoneParams = true;
 
 // 单轴 ± 步进按钮（人物位置、骨骼参数都用它）
 static bool AxisStepper(const char *id, float *v, float step) {
@@ -170,19 +169,64 @@ static void DrawBoneParams() {
   }
 }
 
+// 找"人物位置"要写的根骨：全骨表里没有父节点的那个，回退 Hips
+static void *FindRootBoneForPosition() {
+  for (size_t i = 0; i < s_allBones.size(); i++)
+    if (s_allBones[i].parentIdx < 0)
+      return s_allBones[i].transform;
+  if (s_humanBoneCount > 0)
+    return s_humanBones[0].transform;
+  return nullptr;
+}
+
+// 人物位置（Root XYZ）：滑条 / 数值输入 / 可调步长的 ± 步进（冻结态直接写回）。
+// 原来在主面板，挪到这里跟"选中骨参数"归一类。
+static void DrawRootPositionSection() {
+  void *rootT = FindRootBoneForPosition();
+  if (!g_frozen || !rootT)
+    return;
+  Vec3 lp = GetBoneLocalPos(rootT);
+  // 必须用连续数组：SliderFloat3/InputFloat3 是按 &v[0] 连续写 3 个 float，
+  // 之前用三个独立局部变量（&vx/&vy/&vz）不保证在栈上相邻 → 显示与写回错位。
+  float rp[3] = {lp.x, lp.y, lp.z};
+  bool changed = false;
+  ImGui::TextDisabled(u8"\u4eba\u7269\u4f4d\u7f6e (Root XYZ)");
+  ImGui::SetNextItemWidth(-1);
+  changed |= ImGui::SliderFloat3(u8"##rootpos", rp, -10.0f, 10.0f, "%.2f");
+  ImGui::SetNextItemWidth(-1);
+  changed |= ImGui::InputFloat3(u8"##rootposin", rp, "%.4f");
+  static float s_rootStep = 0.05f;
+  ImGui::TextDisabled(u8"\u6b65\u957f");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(90);
+  ImGui::InputFloat(u8"##rootstep", &s_rootStep, 0.0f, 0.0f, "%.3f");
+  ImGui::TextDisabled("X");
+  ImGui::SameLine();
+  changed |= AxisStepper("rootx", &rp[0], s_rootStep);
+  ImGui::SameLine();
+  ImGui::TextDisabled("Y");
+  ImGui::SameLine();
+  changed |= AxisStepper("rooty", &rp[1], s_rootStep);
+  ImGui::SameLine();
+  ImGui::TextDisabled("Z");
+  ImGui::SameLine();
+  changed |= AxisStepper("rootz", &rp[2], s_rootStep);
+  if (changed)
+    SetBoneLocalPos(rootT, Vec3{rp[0], rp[1], rp[2]});
+}
+
 static void DrawBoneTreePanel() {
   if (!g_showBoneParams)
     return;
   // 默认放主面板右侧：主面板高度随状态变化（冻结后会多出 root 滑条），放左下会重叠
-  ImGui::SetNextWindowPos(ImVec2(340, 10), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(340, 10), LayoutCond());
   // AlwaysAutoResize 配 SetNextItemWidth(-1) 会让窗口宽度塌得很窄（标签被挤出可视区），
   // 所以给个最小宽度约束：高度自适应、宽度不低于 340。
   ImGui::SetNextWindowSizeConstraints(ImVec2(340.0f, 100.0f),
                                       ImVec2(FLT_MAX, FLT_MAX));
   if (!ImGui::Begin(u8"\u9aa8\u9abc\u53c2\u6570", &g_showBoneParams,
-                    ImGuiWindowFlags_NoCollapse |
-                        ImGuiWindowFlags_AlwaysAutoResize |
-                        (g_pinPanels ? ImGuiWindowFlags_NoMove : 0))) {
+                   ImGuiWindowFlags_NoCollapse |
+                       ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::End();
     return;
   }
@@ -190,5 +234,7 @@ static void DrawBoneTreePanel() {
   ImGui::Separator();
   DrawBoneParams();
   DrawIkPanel();
+  ImGui::Separator();
+  DrawRootPositionSection(); // 人物位置（原在主面板）
   ImGui::End();
 }
