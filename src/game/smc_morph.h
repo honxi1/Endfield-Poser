@@ -15,10 +15,17 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <map>
+#include <functional>
 
 #include "core/base.h"
 #include "core/il2cpp_api.h"
 #include "core/game_hooks.h"
+#include "core/pose_lock.h"
+#include "game/character_face_library.h"
+#include "math/character_face.h"
+#include "math/mmd_face_controls.h"
+#include "game/smc_automation.h"
 
 // ---- 常量 ----
 #define SMC_MAX_BIGLIST 8192
@@ -106,7 +113,7 @@ static void *s_smcCore = nullptr;
 static void *s_confirmedSMC = nullptr;
 static int s_frame = 0;
 static volatile bool s_driving = false; // 面板启用 SMC 表情驱动
-static bool s_eyeIKDisabled = false;
+static bool s_smcOwnershipVerified = false;
 
 static SMCMorphBoneEntry s_capturedExpression[SMC_MAX_BIGLIST];
 static int s_capturedLen = 0;
@@ -118,6 +125,27 @@ static int s_faceBoneCount = 0;
 static bool s_faceBonesCaptured = false;
 static bool s_faceBoneTouched[SMC_MAX_FACE_BONES] = {};
 static bool s_faceBoneEvalOk = false; // 本帧是否成功按权重重算过 s_faceBones
+static std::vector<face_geometry::Bone> s_faceNodes;
+static std::shared_ptr<const character_face::Profile> s_characterProfile;
+static character_face::Binding s_characterBinding;
+static uint64_t s_characterBindingGeneration=0;
+static std::string s_characterModel;
+static void SMCFaceSelectProfile(std::shared_ptr<const character_face::Profile> profile,const std::string &model);
+static face_mixing::Hierarchy s_faceHierarchy;
+static std::array<int,SMC_MAX_FACE_BONES> s_faceRegions=[] {
+  std::array<int,SMC_MAX_FACE_BONES> regions;regions.fill(-1);return regions;
+}();
+static uint64_t s_faceGeneration=1;
+static int s_faceBindingRevision=-1;
+static bool s_mmdFaceMode=false;
+static mmd_face_controls::State s_manualFace;
+static void SMCFaceInvalidate() {
+  s_manualFace={};
+  s_faceNodes.clear();s_characterBinding={};s_characterProfile.reset();s_characterModel.clear();s_characterBindingGeneration=0;
+  s_faceHierarchy={};s_faceBindingRevision=-1;++s_faceGeneration;
+  s_faceRegions.fill(-1);
+  s_faceBoneEvalOk=false;
+}
 static void **s_faceBoneRefs = nullptr;
 
 // 中性脸基线（等价于身体的 A-pose 基准）：
@@ -142,7 +170,7 @@ static int s_boneIDToIdx[SMC_BONE_MAP_SIZE];
 static int s_boneIDMapCount = 0;
 static bool s_boneMapReady = false;
 
-// 口型（A/I/U/E/O）+ 表情表（名称/哈希为实测所得，版本敏感）
+// 口型（A/I/U/E/O）+ 表情表（名称/哈希来自 EIEM 逆向，版本敏感）
 static SMCMouthShape s_mouthShapes[SMC_NUM_MOUTH] = {
     {"A", 299073642, -1, -1, -1, -1, -1, false},
     {"I", 1271943943, -1, -1, -1, -1, -1, false},
@@ -230,14 +258,20 @@ static SMCExtraMorph s_extraMorphs[] = {
 };
 static const int s_extraMorphCount =
     (int)(sizeof(s_extraMorphs) / sizeof(s_extraMorphs[0]));
+static_assert(SMC_NUM_MOUTH + s_extraMorphCount <= SMC_MAX_SLIDERS,
+              "SMC weight buffers must cover every declared expression");
 static bool s_extraMorphsResolved = false;
 
 // ---- hook 类型 ----
 typedef void(__fastcall *SMCSMCUpdate_t)(void *, float, void *);
-typedef void(__fastcall *SMCMorphJob_t)(void *, void *, void *, void *);
+// Native x64 ABI for a 16-byte job value returned by MorphToBoneJob(uint, job).
+// The 16-byte return value adds a hidden result pointer before the instance;
+// the callee must return that same pointer in RAX. MethodInfo is argument five.
+// Keep the native result/dependency storage opaque and forward it unchanged.
+typedef void *(__fastcall *SMCMorphJob_t)(void *result, void *smc, uint32_t count,
+                                         void *dependency, void *methodInfo);
 static SMCSMCUpdate_t s_origSMCUpdate = nullptr;
 static SMCMorphJob_t s_origMorphJob = nullptr;
-static SMCMorphJob_t s_origSpecialMorphJob = nullptr;
 
 // ---- 前向声明 ----
 static void ResolveSMCOffsets(void *cls);
@@ -370,17 +404,6 @@ static int SMCOwnershipTest(void *smc, char *detail, int detailSz) {
            "no bone overlap 0/%d, not under char root (char bones=%d)", len,
            s_charBoneXformCount);
   return 0;
-}
-
-static void SMCSetEyeLookAtIK(void *smc, bool enable) {
-  if (!smc)
-    return;
-  __try {
-    int eyeOff = SafeOff(s_offSmcEyeLookAt, 0x1DD, "smc.enableEyeLookAtIK");
-    if (eyeOff > 0)
-      *(bool *)((char *)smc + eyeOff) = enable;
-  } __except (1) {
-  }
 }
 
 // 取该实例第一根面部骨的名字——比组件所在 GO 名更能说明"这是谁的脸"
@@ -721,6 +744,9 @@ static void CharGoName(char *buf, int sz) {
 
 // 放弃当前锁定的实例（把它的大列表还回游戏），保留面板权重与驱动开关
 static void SMCDropLockKeepWeights() {
+  s_smcAutomation.release();
+  s_wasFrozen = false;
+  SMCFaceInvalidate();
   SMCRestoreBigList();
   s_smcCore = nullptr;
   s_confirmedSMC = nullptr;
@@ -739,7 +765,7 @@ static void SMCDropLockKeepWeights() {
     s_fitW[i] = 0.0f;
   s_boneMapReady = false;
   s_boneIDMapCount = 0;
-  s_eyeIKDisabled = false;
+  s_smcOwnershipVerified = false;
   s_smcCheckedInstance = nullptr;
   memset(s_boneIDToIdx, -1, sizeof(s_boneIDToIdx));
   memset(s_faceBoneTouched, 0, sizeof(s_faceBoneTouched));
@@ -1096,6 +1122,12 @@ static void SMCRestoreBigList() {
   }
 }
 
+static void SMCReleaseFreeze() {
+  s_smcAutomation.release();
+  if (s_wasFrozen && CharAnimatorAlive()) SMCRestoreBigList();
+  s_wasFrozen=false;
+}
+
 // NativeHashMap 探测 + morph 名 → 大列表区间映射（A/I/U/E/O 用硬编码哈希，
 // 表情目标按名字在 morphMappingNames 里反查哈希）
 static void ResolveSMCMouthShapes(void *smcBase) {
@@ -1253,8 +1285,7 @@ static void ResolveSMCMouthShapes(void *smcBase) {
 }
 
 // DoEvaluateMorphToBoneJob：确认 SMC 实例、抓大列表、驱动时清零游戏自身增量
-static void __fastcall HookedSMCMorphJob(void *__this, void *param1,
-                                         void *param2, void *methodInfo) {
+static void SMCMorphJobBefore(void *param1) {
   if (!s_confirmedSMC && param1) {
     // 归属未确认前只登记候选，EyeLookAtIK 等副作用等主线程校验通过再做
     if (s_smcOwnershipGaveUp || !SMCIsRejected(param1)) {
@@ -1317,21 +1348,329 @@ static void __fastcall HookedSMCMorphJob(void *__this, void *param1,
     } __except (1) {
     }
   }
-  if (s_origMorphJob)
-    s_origMorphJob(__this, param1, param2, methodInfo);
-}
-
-static void __fastcall HookedSMCSpecialMorphJob(void *__this, void *param1,
-                                                void *param2,
-                                                void *methodInfo) {
-  if (s_origSpecialMorphJob)
-    s_origSpecialMorphJob(__this, param1, param2, methodInfo);
 }
 
 // 写回面部骨骼（局部位姿）。
 // 注意：写的是"全部"面部骨，而不是只写被 morph 命中的那些——因为 s_faceBones 每帧
 // 都以静息位姿为底再叠加增量，没被命中的骨就是静息位姿。只写"命中"的骨会导致：
 // 权重调回 0 时没有任何骨被标记 → 上一帧的表情被留在骨上（"重置无效"的根因）。
+// Sample the manual controls as one complete expression frame.
+struct SMCExpressionFrame {
+  bool active=false; void* animator=nullptr; float weights[SMC_MAX_SLIDERS]={};
+  uint64_t generation=0;
+  face_mixing::Settings settings;
+  std::shared_ptr<const character_face::Profile> profile;
+  std::array<float,character_face::MaxMorphs> expressions{};
+  float fallbackWeights[SMC_MAX_SLIDERS]={};
+};
+static SMCExpressionFrame s_expressionFaceCurrent;
+static bool s_expressionFaceSaved=false, s_expressionSavedDriving=false, s_expressionSavedBaseReady=false;
+static void* s_expressionSavedCore=nullptr;
+static uint64_t s_expressionSavedGeneration=0;
+static float s_expressionSavedWeights[SMC_MAX_SLIDERS]={};
+static SMCFaceBone s_expressionSavedBase[SMC_MAX_FACE_BONES];
+static std::vector<mmd_face_controls::Native> SMCManualCatalog() {
+  std::vector<mmd_face_controls::Native> fixed;
+  const char *vowels[]={u8"あ",u8"い",u8"う",u8"え",u8"お"};
+  for(int i=0;i<5;++i)fixed.push_back({vowels[i],i,3});
+  for(int i=0;i<s_extraMorphCount;++i) {
+    const char *target=s_extraMorphs[i].targets[0].endfieldName;
+    int panel=!strncmp(target,"brow_",5)?1:!strncmp(target,"eye_",4)?2:!strncmp(target,"mouth_",6)?3:4;
+    fixed.push_back({s_extraMorphs[i].vmdNameUtf8,5+i,panel});
+  }
+  return fixed;
+}
+static void SMCManualPrepare() {
+  if(s_manualFace.owner!=g_charAnimator||s_manualFace.generation!=s_faceGeneration||s_manualFace.profile!=s_characterProfile)
+    s_manualFace.bind(g_charAnimator,s_faceGeneration,s_characterProfile,SMCManualCatalog());
+}
+static bool SMCNativeChannelReady(int channel) {
+  if(channel<0||channel>=SMC_NUM_MOUTH+s_extraMorphCount||!s_boneMapReady)return false;
+  if(channel<SMC_NUM_MOUTH)return s_mouthResolved&&s_mouthShapes[channel].resolved&&s_mouthShapes[channel].jobCount>0;
+  const auto &m=s_extraMorphs[channel-SMC_NUM_MOUTH];
+  for(int i=0;i<m.targetCount;++i)if(m.targets[i].resolved&&m.targets[i].count>0)return true;
+  return false;
+}
+// 0 unavailable, 1 character calibration, 2 optional fixed mapping.
+static int SMCManualSource(const mmd_face_controls::Control &control) {
+  int id=control.morph;
+  if(s_manualFace.profile&&s_manualFace.profile==s_characterProfile&&s_characterBinding.ready&&
+      s_characterBindingGeneration==s_faceGeneration&&id>=0&&id<int(s_characterBinding.usable.size())&&s_characterBinding.usable[id])return 1;
+  return s_manualFace.fallback&&SMCNativeChannelReady(control.native)?2:0;
+}
+static SMCExpressionFrame SMCManualFrame() {
+  SMCExpressionFrame frame;
+  if(!s_mmdFaceMode||!g_frozen||!s_smcOwnershipVerified||!s_manualFace.applied||s_manualFace.owner!=g_charAnimator||
+      s_manualFace.generation!=s_faceGeneration)return frame;
+  frame.active=true;frame.animator=g_charAnimator;frame.generation=s_faceGeneration;
+  frame.profile=s_manualFace.profile;frame.settings.strength=s_manualFace.strength;frame.settings.fallback=s_manualFace.fallback;
+  for(int i=0;i<int(s_manualFace.controls.size());++i) {
+    const auto &c=s_manualFace.controls[i];float value=s_manualFace.weights[i];
+    int source=SMCManualSource(c);
+    if(source==1)frame.expressions[c.morph]=value;
+    if(source==2)frame.fallbackWeights[c.native]=face_geometry::Clamp(frame.fallbackWeights[c.native]+value,0,1);
+  }
+  return frame;
+}
+
+static void *__fastcall HookedSMCMorphJob(void *result, void *smc, uint32_t count,
+                                        void *dependency, void *method) {
+  if (SMCRuntimeClosing()) return s_origMorphJob?s_origMorphJob(result,smc,count,dependency,method):result;
+  std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
+  if (!SMCRuntimeClosing() && SMCEnabled() && lock.owns_lock() && !g_charChanged && !SMCCharacterSwitchPending())
+    SMCMorphJobBefore(smc);
+  // Returning explicitly preserves RAX across the lock destructor as well as
+  // busy/switching paths; a tail-call accidentally preserving RAX is insufficient.
+  return s_origMorphJob
+             ? s_origMorphJob(result, smc, count, dependency, method)
+             : result;
+}
+static void SMCExpressionConsume() {
+  if(s_mmdFaceMode)SMCManualPrepare();
+  s_expressionFaceCurrent=SMCManualFrame();
+  bool active=s_expressionFaceCurrent.active && s_expressionFaceCurrent.animator==g_charAnimator &&
+      s_expressionFaceCurrent.generation==s_faceGeneration;
+  s_expressionFaceCurrent.active=active;
+  if(s_expressionFaceSaved && (!active || s_expressionSavedCore!=s_smcCore || s_expressionSavedGeneration!=s_faceGeneration)) {
+    if(s_expressionSavedCore==s_smcCore && s_expressionSavedGeneration==s_faceGeneration) {
+      s_driving=s_expressionSavedDriving; s_driveBaseReady=s_expressionSavedBaseReady;
+      memcpy(s_driveBase,s_expressionSavedBase,sizeof(s_driveBase));
+      for(int i=0;i<SMC_NUM_MOUTH;i++)s_mouthWeights[i]=s_expressionSavedWeights[i];
+      for(int i=0;i<s_extraMorphCount;i++)s_extraMorphs[i].weight=s_extraMorphs[i].prevWeight=s_expressionSavedWeights[i+SMC_NUM_MOUTH];
+    }
+    s_expressionFaceSaved=false;
+  }
+  if(!active || !s_faceBonesCaptured || !s_driveBaseReady || s_captureNeutral)return;
+  if(!s_expressionFaceSaved) {
+    s_expressionFaceSaved=true;s_expressionSavedCore=s_smcCore;s_expressionSavedDriving=s_driving;s_expressionSavedBaseReady=s_driveBaseReady;
+    s_expressionSavedGeneration=s_faceGeneration;
+    memcpy(s_expressionSavedBase,s_driveBase,sizeof(s_driveBase));
+    for(int i=0;i<SMC_NUM_MOUTH;i++)s_expressionSavedWeights[i]=s_mouthWeights[i];
+    for(int i=0;i<s_extraMorphCount;i++)s_expressionSavedWeights[i+SMC_NUM_MOUTH]=s_extraMorphs[i].weight;
+  }
+  // Evaluate motion weights against the neutral face, not the frozen expression.
+  memcpy(s_driveBase,s_faceRestPose,sizeof(s_driveBase));s_driving=true;
+  for(int i=0;i<SMC_NUM_MOUTH;i++)s_mouthWeights[i]=s_expressionFaceCurrent.weights[i];
+  for(int i=0;i<s_extraMorphCount;i++)s_extraMorphs[i].weight=s_extraMorphs[i].prevWeight=s_expressionFaceCurrent.weights[i+SMC_NUM_MOUTH];
+}
+static void SMCManualMode(bool enabled) {
+  s_mmdFaceMode=enabled;
+  SMCManualPrepare();
+  // Restore fixed sliders before the game-mode panel accepts another edit.
+  SMCExpressionConsume();
+}
+static bool SMCFaceMatrix(void *transform,face_math::Matrix *out) {
+  __try {
+    if(!UnityObjAlive(transform)||!g_transform_get_localToWorldMatrix)return false;
+    void *value=Invoke(g_transform_get_localToWorldMatrix,transform);
+    if(!value)return false;
+    memcpy(out,static_cast<char *>(value)+16,sizeof(*out));
+    for(float v:out->m)if(!std::isfinite(v))return false;
+    return true;
+  } __except(1) {return false;}
+}
+static Vec3 SMCFaceScale(void *transform) {
+  __try {
+    if(UnityObjAlive(transform)&&g_transform_get_localScale) {
+      void *v=Invoke(g_transform_get_localScale,transform);
+      if(v)return *reinterpret_cast<Vec3 *>(static_cast<char *>(v)+16);
+    }
+  } __except(1) {}
+  return {1,1,1};
+}
+static bool SMCFaceIdentity(void *transform,char *name,void **parent) {
+  __try {
+    if(!UnityObjAlive(transform)||!g_transform_get_parent||!g_object_get_name)return false;
+    ReadStr(Invoke(g_object_get_name,transform),name,128);
+    *parent=Invoke(g_transform_get_parent,transform);return *parent!=nullptr;
+  } __except(1) {return false;}
+}
+// Called once per neutral capture / skeleton revision on the SMC owner thread.
+// No game objects are accessed by Evaluate(), nor by background file loaders.
+static void SMCFaceBind() {
+  if(!s_smcOwnershipVerified||!s_faceBonesCaptured||s_captureNeutral||s_faceBoneCount<=0||
+      s_allBones.empty()||s_faceBindingRevision==s_bonesRev)return;
+  s_faceBindingRevision=s_bonesRev;s_faceNodes.clear();s_characterBinding={};s_characterBindingGeneration=0;s_faceHierarchy={};s_faceRegions.fill(-1);
+  try {
+    const int count=s_faceBoneCount;
+    std::vector<face_geometry::Bone> nodes(count);
+    std::vector<Vec3> scales(count);
+    std::map<void *,int> slots,all;
+    std::map<void *,face_math::Matrix> external;
+    for(int i=0;i<count;++i)if(s_faceRestPose[i].transform)slots[s_faceRestPose[i].transform]=i;
+    for(int i=0;i<int(s_allBones.size());++i)all[s_allBones[i].transform]=i;
+    std::vector<void *> parents(count,nullptr);
+    for(int i=0;i<count;++i) {
+      auto t=s_faceRestPose[i].transform;auto found=all.find(t);
+      void *parent=nullptr;
+      if(found!=all.end()) {
+        const auto &bone=s_allBones[found->second];nodes[i].name=bone.name;
+        parent=bone.parent;
+      } else {
+        char name[128]={};
+        if(!SMCFaceIdentity(t,name,&parent)) {
+          // Virtual or absent channels do not invalidate the real facial bones.
+          nodes[i].name.clear();scales[i]={1,1,1};continue;
+        }
+        nodes[i].name=name;
+      }
+      s_faceRegions[i]=face_mixing::BoneRegion(nodes[i].name);
+      parents[i]=parent;
+    }
+    // Native regional ownership needs names only, even if template geometry
+    // cannot be built. Finish classification before attempting matrix reads.
+    Vec3 origin;bool haveOrigin=false;
+    for(int i=0;i<count;++i) {
+      void *parent=parents[i],*t=s_faceRestPose[i].transform;
+      if(!parent){nodes[i].name.clear();scales[i]={1,1,1};continue;}
+      auto slot=slots.find(parent);
+      if(slot!=slots.end())nodes[i].parent=slot->second;
+      else {
+        auto it=external.find(parent);
+        if(it==external.end()) {
+          face_math::Matrix mat;if(!SMCFaceMatrix(parent,&mat))return;
+          if(!haveOrigin){origin=mat.position();haveOrigin=true;}
+          mat.m[12]-=origin.x;mat.m[13]-=origin.y;mat.m[14]-=origin.z;
+          it=external.emplace(parent,mat).first;
+        }
+        nodes[i].parentNeutral=it->second;
+      }
+      scales[i]=SMCFaceScale(t);
+    }
+    std::vector<int> state(count,0);
+    std::function<bool(int)> visit=[&](int i) {
+      if(state[i]==2)return true;
+      if(state[i]==1)return false;
+      state[i]=1;
+      int p=nodes[i].parent;
+      if(p>=0){if(!visit(p))return false;nodes[i].parentNeutral=nodes[p].neutral;}
+      const auto &v=s_faceRestPose[i];
+      nodes[i].neutral=nodes[i].parentNeutral*face_math::TRS({v.px,v.py,v.pz},{v.rx,v.ry,v.rz,v.rw},scales[i]);
+      state[i]=2;return true;
+    };
+    for(int i=0;i<count;++i)if(!visit(i))return;
+    s_faceNodes=nodes;
+    face_mixing::Pose rest;
+    for(int i=0;i<count;++i) {
+      const auto &v=s_faceRestPose[i];
+      rest[i]={{v.px,v.py,v.pz},{v.rx,v.ry,v.rz,v.rw}};
+    }
+    s_faceHierarchy=face_mixing::BindHierarchy(nodes,rest,scales);
+    if(s_faceHierarchy.ready)s_faceRegions=s_faceHierarchy.region;
+    Log("[FACE] neutral hierarchy: ready=%d bones=%d revision=%d",s_faceHierarchy.ready,count,s_bonesRev);
+    SMCFaceSelectProfile(character_face_library::Select(CurrentCharModelKey(),s_faceNodes,s_faceHierarchy),CurrentCharModelKey());
+  } catch(...) {s_faceNodes.clear();s_characterBinding={};s_faceHierarchy={};Log("[FACE] neutral binding failed");}
+}
+static void SMCFaceSelectProfile(std::shared_ptr<const character_face::Profile> profile,const std::string &model) {
+  if(profile==s_characterProfile&&model==s_characterModel&&s_characterBindingGeneration==s_faceGeneration)return;
+  s_characterProfile=std::move(profile);s_characterModel=model;s_characterBinding={};
+  if(!s_faceHierarchy.ready){s_characterBindingGeneration=0;return;}
+  s_characterBindingGeneration=s_faceGeneration;
+  if(s_characterProfile) {
+    s_characterBinding=character_face::Bind(*s_characterProfile,s_characterModel,s_faceNodes,s_faceHierarchy);
+    Log("[FACE] character calibration: model=%s ready=%d matched=%d usable=%d error=%.5f",
+      s_characterProfile->key.c_str(),s_characterBinding.ready,s_characterBinding.matched,
+      s_characterBinding.usableCount,s_characterBinding.error);
+  }
+}
+
+static bool SMCExpressionActive() {
+  return s_expressionFaceCurrent.active&&s_expressionFaceSaved&&
+      s_expressionFaceCurrent.generation==s_faceGeneration;
+}
+// Same fixed EIEM channel table as the manual SMC panel. Normalize the raw
+// vowel mix first, then apply regional strength to the resulting bone deltas;
+// otherwise 200% mouth strength would be normalized back to 100%.
+struct SMCExpressionNativeDelta {Vec3 position,rotation;};
+using SMCExpressionNativeDeltaArray=std::array<SMCExpressionNativeDelta,SMC_MAX_FACE_BONES>;
+static bool SMCExpressionNativeDeltas(const float *weights,SMCExpressionNativeDeltaArray &deltas) {
+  if(!s_boneMapReady||s_boneIDMapCount<=0||s_capturedLen<=0||!s_mouthResolved)return false;
+  __try {
+    float total=0;for(int c=0;c<SMC_NUM_MOUTH;++c)total+=face_geometry::Clamp(weights[c],0,1);
+    float norm=1.f/(std::max)(1.f,total);
+    Vec3 positions[SMC_MAX_FACE_BONES]={},rotations[SMC_MAX_FACE_BONES]={};
+    for(int c=0;c<SMC_NUM_MOUTH+s_extraMorphCount;++c) {
+      bool mouth=c<SMC_NUM_MOUTH;
+      float weight=face_geometry::Clamp(weights[c],0,1)*(mouth?norm:1.f);
+      if(weight<.001f||(!mouth&&!s_extraMorphsResolved))continue;
+      int targets=mouth?1:s_extraMorphs[c-SMC_NUM_MOUTH].targetCount;
+      for(int t=0;t<targets;++t) {
+        int start,count;bool eye=false;
+        if(mouth) {start=s_mouthShapes[c].jobStartIdx;count=s_mouthShapes[c].jobCount;}
+        else {
+          const auto &target=s_extraMorphs[c-SMC_NUM_MOUTH].targets[t];
+          if(!target.resolved)continue;
+          start=target.startIdx;count=target.count;eye=strncmp(target.endfieldName,"eye_",4)==0;
+        }
+        if(start<0||count<0||start>s_capturedLen||count>s_capturedLen-start)continue;
+        for(int j=start;j<start+count;++j) {
+          const auto &entry=s_capturedExpression[j];
+          int i=entry.boneID>=0&&entry.boneID<SMC_BONE_MAP_SIZE?s_boneIDToIdx[entry.boneID]:-1;
+          if(i<0||i>=s_faceBoneCount)continue;
+          Vec3 p{entry.deltaPosX,entry.deltaPosY,entry.deltaPosZ},r{entry.deltaRotX,entry.deltaRotY,entry.deltaRotZ};
+          if(!std::isfinite(Len(p))||fabsf(p.x)>1||fabsf(p.y)>1||fabsf(p.z)>1)continue;
+          positions[i]=positions[i]+p*weight;
+          if(!eye&&std::isfinite(Len(r))&&(!mouth||(fabsf(r.x)<30&&fabsf(r.y)<30&&fabsf(r.z)<30)))
+            rotations[i]=rotations[i]+r*weight;
+        }
+      }
+    }
+    for(int i=0;i<s_faceBoneCount;++i) {
+      deltas[i].position=positions[i];
+      // Preserve Euler increments until regional strength is applied, as in
+      // the original game mapping (not a quaternion component scale).
+      deltas[i].rotation=rotations[i];
+    }
+    return true;
+  } __except(1) {return false;}
+}
+static void SMCExpressionEvaluate() {
+  s_faceBoneEvalOk=false;
+  if(!SMCExpressionActive()||!s_faceBonesCaptured||s_captureNeutral)return;
+  const auto &frame=s_expressionFaceCurrent;const auto &settings=frame.settings;
+  face_mixing::Pose rest;
+  SMCExpressionNativeDeltaArray nativeDeltas{},fallbackDeltas{};
+  for(int i=0;i<s_faceBoneCount;++i) {
+    const auto &v=s_faceRestPose[i];rest[i]={{v.px,v.py,v.pz},{v.rx,v.ry,v.rz,v.rw}};
+  }
+  if(settings.uses(face_mixing::Driver::Game))SMCExpressionNativeDeltas(frame.weights,nativeDeltas);
+  if(settings.fallback&&settings.uses(face_mixing::Driver::Character))SMCExpressionNativeDeltas(frame.fallbackWeights,fallbackDeltas);
+  bool characterReady=frame.profile&&frame.profile==s_characterProfile&&s_characterBinding.ready&&
+      s_characterBindingGeneration==s_faceGeneration;
+  std::array<face_mixing::Pose,face_mixing::RegionCount> complete;
+  bool identical=true;
+  for(int r=0;r<face_mixing::RegionCount;++r) {
+    float amount=settings.amount(r);int reuse=-1;
+    for(int j=0;j<r;++j)if(settings.driver[j]==settings.driver[r]&&settings.amount(j)==amount){reuse=j;break;}
+    if(reuse>=0){complete[r]=complete[reuse];continue;}
+    if(r)identical=false;
+    complete[r]=rest;
+    if(settings.driver[r]==face_mixing::Driver::Disabled)continue;
+    if(settings.driver[r]==face_mixing::Driver::Character&&characterReady)
+      if(!character_face::Evaluate(*frame.profile,s_characterBinding,s_faceHierarchy,frame.expressions,amount,complete[r]))return;
+    const auto &deltas=settings.driver[r]==face_mixing::Driver::Game?nativeDeltas:fallbackDeltas;
+    for(int i=0;i<s_faceBoneCount;++i) {
+      const auto &d=deltas[i];complete[r][i].position=complete[r][i].position+d.position*amount;
+      complete[r][i].rotation=NormQ(Quat::FromEulerDeg(d.rotation*amount)*complete[r][i].rotation);
+    }
+  }
+  face_mixing::Pose output;
+  if(identical)output=complete[0];
+  else {
+    auto fallback=rest;float amount=settings.amount(-1);
+    for(int i=0;i<s_faceBoneCount;++i) {
+      fallback[i].position=rest[i].position+nativeDeltas[i].position*amount;
+      fallback[i].rotation=NormQ(Quat::FromEulerDeg(nativeDeltas[i].rotation*amount)*rest[i].rotation);
+    }
+    if(!face_mixing::Compose(s_faceHierarchy,complete,fallback,output))return;
+  }
+  memcpy(s_faceBones,s_faceRestPose,sizeof(s_faceBones));
+  for(int i=0;i<s_faceBoneCount;++i) {
+    const auto &v=output[i];auto &bone=s_faceBones[i];bone.px=v.position.x;bone.py=v.position.y;bone.pz=v.position.z;
+    bone.rx=v.rotation.x;bone.ry=v.rotation.y;bone.rz=v.rotation.z;bone.rw=v.rotation.w;
+  }
+  s_faceBoneEvalOk=true;
+}
 static void SMCWriteTouchedBones() {
   if (!s_faceBoneEvalOk)
     return; // 本帧没成功重算，别写回陈旧值
@@ -1339,12 +1678,16 @@ static void SMCWriteTouchedBones() {
     for (int i = 0; i < s_faceBoneCount; i++) {
       if (!s_faceBones[i].transform)
         continue;
-      SetBoneLocalPos(s_faceBones[i].transform,
-                      Vec3(s_faceBones[i].px, s_faceBones[i].py,
-                           s_faceBones[i].pz));
-      SetBoneLocalRot(s_faceBones[i].transform,
-                      Quat(s_faceBones[i].rx, s_faceBones[i].ry,
-                           s_faceBones[i].rz, s_faceBones[i].rw));
+      // This hook runs on the game's SMC thread. Automatic facial writes must
+      // not invoke the editor's manual-write observers: those traverse and edit
+      // the GUI-owned humanoid/accessory vectors while Stop can replace them.
+      if (!UnityObjAlive(s_faceBones[i].transform)) continue;
+      Vec3 p{s_faceBones[i].px,s_faceBones[i].py,s_faceBones[i].pz};
+      Quat q{s_faceBones[i].rx,s_faceBones[i].ry,s_faceBones[i].rz,s_faceBones[i].rw};
+      void *pp[] = {&p};
+      void *qp[] = {&q};
+      Invoke(g_transform_set_localPosition,s_faceBones[i].transform,pp);
+      Invoke(g_transform_set_localRotation,s_faceBones[i].transform,qp);
     }
   } __except (1) {
   }
@@ -1352,7 +1695,7 @@ static void SMCWriteTouchedBones() {
 
 // SkeletalMorphCore.Update：初始化（偏移/口型/大列表/骨骼静息位姿/骨映射），
 // 之后每帧按面板权重累加增量，在原始 Update 之后覆盖写回
-static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
+static void __fastcall SMCUpdateBody(void *__this, float deltaTime,
                                        void *methodInfo) {
   if (!s_smcCore) {
     if (s_confirmedSMC && __this == s_confirmedSMC) {
@@ -1373,6 +1716,8 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     return;
   }
   s_frame++;
+  if (!g_frozen && s_wasFrozen) SMCReleaseFreeze();
+  s_wasFrozen=g_frozen;
 
   if (s_frame == 1) {
     ResolveSMCOffsets(s_smcClass);
@@ -1385,14 +1730,14 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
   if (s_frame >= 3 && s_smcCheckedInstance != __this) {
     s_smcCheckedInstance = __this;
     if (s_smcOwnershipGaveUp) {
-      SMCSetEyeLookAtIK(__this, false);
-      s_eyeIKDisabled = true;
+      s_smcOwnershipVerified = false;
       Log("[SMC] ownership check skipped (gave up) -> accepting %p", __this);
     } else {
       char detail[160];
       char owner[128];
       char current[128];
       int verdict = SMCOwnershipTest(__this, detail, sizeof(detail));
+      s_smcOwnershipVerified = verdict == 1;
       if (verdict == 0 && s_smcRejectedCount < SMC_MAX_REJECTED) {
         SMCFirstBoneName(__this, owner, sizeof(owner));
         CharGoName(current, sizeof(current));
@@ -1403,8 +1748,6 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
           s_origSMCUpdate(__this, deltaTime, methodInfo);
         return; // 本帧不驱动，等新候选
       }
-      SMCSetEyeLookAtIK(__this, false);
-      s_eyeIKDisabled = true;
       if (verdict == 1) {
         SMCFirstBoneName(__this, owner, sizeof(owner));
         CharGoName(current, sizeof(current));
@@ -1515,8 +1858,12 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     }
   }
 
+  SMCFaceBind();
+  SMCExpressionConsume();
+  s_faceBoneEvalOk=false;
+  if(SMCExpressionActive())SMCExpressionEvaluate();
   // 按面板权重累加 morph 增量到静息位姿
-  if (s_driving && s_boneMapReady && s_boneIDMapCount > 0 &&
+  else if (s_driving && s_boneMapReady && s_boneIDMapCount > 0 &&
       s_capturedLen > 0 && s_mouthResolved) {
     s_faceBoneEvalOk = false;
     __try {
@@ -1640,7 +1987,7 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
         wsum += s_mouthWeights[s];
       for (int em = 0; em < s_extraMorphCount; em++)
         wsum += s_extraMorphs[em].weight;
-      if (fabsf(wsum - s_lastWeightSum) > 0.001f) {
+      if (!s_expressionFaceCurrent.active && fabsf(wsum - s_lastWeightSum) > 0.001f) {
         s_lastWeightSum = wsum;
         Log("[SMC] weights sum=%.3f -> applied=%d bones (face=%d)", wsum,
             applied, s_faceBoneCount);
@@ -1651,6 +1998,10 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     }
   }
 
+  // Native auto-blinks can also drive eye-fold BlendShapes/material channels.
+  // Pausing their source avoids a frozen eyelid with an animated surround.
+  s_smcAutomation.update(__this,g_charAnimator,
+      g_frozen && s_faceBonesCaptured && !s_captureNeutral,s_smcOwnershipVerified);
   if (s_origSMCUpdate)
     s_origSMCUpdate(__this, deltaTime, methodInfo);
 
@@ -1679,6 +2030,7 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
                          : -1.0f;
       s_faceBonesCaptured = true;
       s_captureNeutral = false;
+      SMCFaceInvalidate();
       for (int i = 0; i < SMC_NUM_MOUTH; i++)
         s_mouthWeights[i] = 0.0f;
       for (int i = 0; i < s_extraMorphCount; i++) {
@@ -1702,6 +2054,83 @@ static void __fastcall HookedSMCUpdate(void *__this, float deltaTime,
     static int s_snapTick = 0;
     if ((s_snapTick++ & 1) == 0)
       SMCSnapshotFacePose();
+  }
+}
+
+// Reset/capture uses the pose lock too. Never block a Unity callback waiting
+// for a worker's IL2CPP invocation; busy callbacks run the original game code.
+static void __fastcall HookedSMCUpdate(void *self, float dt, void *method) {
+  if (SMCRuntimeClosing()) {if(s_origSMCUpdate)s_origSMCUpdate(self,dt,method);return;}
+  std::unique_lock<std::recursive_mutex> lock(g_poseMutex, std::try_to_lock);
+  if (SMCRuntimeClosing() || !SMCEnabled() || !lock.owns_lock() || g_charChanged || SMCCharacterSwitchPending()) {
+    if (s_origSMCUpdate) s_origSMCUpdate(self, dt, method);
+    return;
+  }
+  SMCUpdateBody(self, dt, method);
+}
+
+static bool SMCJobValueType(void *type) {
+  if (!type || !il2cpp_type_get_type || !il2cpp_class_from_type ||
+      !il2cpp_class_value_size || il2cpp_type_get_type(type) != 0x11)
+    return false; // IL2CPP_TYPE_VALUETYPE
+  void *klass = il2cpp_class_from_type(type);
+  if (!klass)
+    return false;
+  uint32_t alignment = 0;
+  // The engine can wrap Unity's job handle. We never inspect its fields: the
+  // value kind/size determines this native ABI, not its managed name/namespace.
+  return il2cpp_class_value_size(klass, &alignment) == 16;
+}
+
+static bool SMCValidateHookSignatures(void *update, void *job) {
+  if (!update || !job || sizeof(void *) != 8 ||
+      !il2cpp_method_get_flags || !il2cpp_method_get_param_count ||
+      !il2cpp_method_get_return_type || !il2cpp_method_get_param ||
+      !il2cpp_type_get_type)
+    return false;
+  uint32_t flags = 0;
+  if ((il2cpp_method_get_flags(update, &flags) & 0x10) ||
+      (il2cpp_method_get_flags(job, &flags) & 0x10) ||
+      il2cpp_method_get_param_count(update) != 1 ||
+      il2cpp_method_get_param_count(job) != 2)
+    return false; // both must be instance methods
+  void *updateReturn = il2cpp_method_get_return_type(update);
+  void *deltaTime = il2cpp_method_get_param(update, 0);
+  void *count = il2cpp_method_get_param(job, 0);
+  return updateReturn && deltaTime && count &&
+         il2cpp_type_get_type(updateReturn) == 1 && // void
+         il2cpp_type_get_type(deltaTime) == 0xc &&  // float
+         (il2cpp_type_get_type(count) == 8 ||       // int32 / uint32 share
+          il2cpp_type_get_type(count) == 9) &&      // the same integer ABI
+         SMCJobValueType(il2cpp_method_get_return_type(job)) &&
+         SMCJobValueType(il2cpp_method_get_param(job, 1));
+}
+
+static void SMCLogHookMethod(void *method, const char *label) {
+  if (!method || !il2cpp_method_get_flags || !il2cpp_method_get_param_count ||
+      !il2cpp_method_get_return_type || !il2cpp_method_get_param ||
+      !il2cpp_type_get_type || !il2cpp_class_from_type ||
+      !il2cpp_class_get_name || !il2cpp_class_get_namespace)
+    return;
+  uint32_t impl = 0;
+  uint32_t count = il2cpp_method_get_param_count(method);
+  Log("[SMC] ABI %s: flags=0x%x params=%u", label,
+      il2cpp_method_get_flags(method, &impl), count);
+  for (int i = -1; i < static_cast<int>(count) && i < 4; ++i) {
+    void *type = i < 0 ? il2cpp_method_get_return_type(method)
+                      : il2cpp_method_get_param(method, i);
+    if (!type)
+      continue;
+    int kind = il2cpp_type_get_type(type);
+    void *klass = il2cpp_class_from_type(type);
+    const char *name = klass ? il2cpp_class_get_name(klass) : nullptr;
+    const char *space = klass ? il2cpp_class_get_namespace(klass) : nullptr;
+    uint32_t alignment = 0;
+    int size = klass && kind == 0x11 && il2cpp_class_value_size
+                   ? il2cpp_class_value_size(klass, &alignment)
+                   : -1;
+    Log("[SMC] ABI %s slot=%d type=0x%x %s.%s valueBytes=%d", label, i,
+        kind, space ? space : "?", name ? name : "?", size);
   }
 }
 
@@ -1731,32 +2160,31 @@ static void InstallSMCFaceHooks() {
     Log("[SMC] SkeletalMorphCore class found");
 
     void *updateMethod = FindMethod(smcClass, "Update", 1);
-    if (updateMethod)
-      Hook(updateMethod, "SkeletalMorphCore.Update", (void *)HookedSMCUpdate,
-           (void **)&s_origSMCUpdate);
-    else
-      Log("[SMC] Update method not found");
-
     void *jobMethod = FindMethod(smcClass, "DoEvaluateMorphToBoneJob", 2);
-    if (jobMethod)
-      Hook(jobMethod, "DoEvaluateMorphToBoneJob", (void *)HookedSMCMorphJob,
-           (void **)&s_origMorphJob);
-    else
-      Log("[SMC] DoEvaluateMorphToBoneJob not found");
-
-    void *specialJob =
-        FindMethod(smcClass, "DoEvaluateSpecialMorphToBoneJob", 2);
-    if (specialJob)
-      Hook(specialJob, "DoEvaluateSpecialMorphToBoneJob",
-           (void *)HookedSMCSpecialMorphJob, (void **)&s_origSpecialMorphJob);
+    SMCLogHookMethod(updateMethod, "Update");
+    SMCLogHookMethod(jobMethod, "MorphJob");
+    if (!SMCValidateHookSignatures(updateMethod, jobMethod)) {
+      Log("[SMC] Callback signature mismatch; facial hooks disabled");
+      return;
+    }
+    Log("[SMC] Callback ABI verified: instance Update(float), "
+        "value16 MorphJob(count32, value16)");
+    Hook(updateMethod, "SkeletalMorphCore.Update", (void *)HookedSMCUpdate,
+         (void **)&s_origSMCUpdate);
+    Hook(jobMethod, "DoEvaluateMorphToBoneJob", (void *)HookedSMCMorphJob,
+         (void **)&s_origMorphJob);
+    // SpecialMorphJob was a no-op interceptor. Leave its native ABI untouched.
   } __except (1) {
     Log("[SMC] InstallSMCFaceHooks exception");
   }
 }
 
 // 角色切换 / 停止驱动时重置（把大列表还回游戏）
-static void ResetSMCState() {
-  SMCRestoreBigList();
+static void ResetSMCState(bool restoreOriginal = true) {
+  s_smcAutomation.release(restoreOriginal);
+  s_wasFrozen = false;
+  SMCFaceInvalidate();
+  if (restoreOriginal) SMCRestoreBigList();
   s_smcCore = nullptr;
   s_confirmedSMC = nullptr;
   s_frame = 0;
@@ -1765,6 +2193,8 @@ static void ResetSMCState() {
   s_faceBoneRefs = nullptr;
   s_faceBoneCount = 0;
   s_faceBonesCaptured = false;
+  s_charBoneXformCount = 0;
+  s_charBoneXformRev = -1;
   s_captureNeutral = false;
   s_neutralFrames = 0;
   s_driveBaseReady = false;
@@ -1774,7 +2204,7 @@ static void ResetSMCState() {
     s_fitW[i] = 0.0f;
   s_boneMapReady = false;
   s_boneIDMapCount = 0;
-  s_eyeIKDisabled = false;
+  s_smcOwnershipVerified = false;
   s_smcCheckedInstance = nullptr;
   s_smcRejectedCount = 0;
   s_smcRejectStrikes = 0;

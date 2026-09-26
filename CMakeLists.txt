@@ -23,6 +23,9 @@ if(WIN32)
     src/core/gui_overlay.h
     src/game/skeleton.h src/game/freeze.h src/game/accessory.h src/game/morph.h src/game/smc_morph.h
     src/game/char_state.h
+    src/core/pose_lock.h src/game/character_face_library.h src/game/smc_automation.h
+    src/math/face_math.h src/math/face_geometry.h src/math/face_mixing.h
+    src/math/character_face.h src/math/mmd_face_controls.h
     src/editor/selection.h src/editor/panel_library.h src/editor/panel_morph.h
     src/editor/panel_bones.h
     src/editor/ik_control.h
@@ -38,7 +41,7 @@ if(WIN32)
     deps deps/imgui deps/imguizmo deps/minhook_lib/include deps/json src)
   target_compile_definitions(poser PRIVATE
     APPLEPIE_PLUGIN_IMPL _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN
-    IMGUI_DEFINE_MATH_OPERATORS)
+    IMGUI_DEFINE_MATH_OPERATORS _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
   # /EHa：让 __except 也能捕获 C++ 异常（IL2CPP 调用可能抛 0xe06d7363，
   # /EHsc 下这类异常会直接崩掉游戏进程）
   target_compile_options(poser PRIVATE /EHa)
@@ -57,6 +60,12 @@ if(WIN32)
   set_target_properties(vulkan-1 PROPERTIES OUTPUT_NAME "vulkan-1")
 
   # 部署：把 poser.dll 与 d3dcompiler_47.dll 拷到 plugin/
+  add_dependencies(poser d3dcompiler_47 vulkan-1)
+  add_custom_command(TARGET poser POST_BUILD
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/copy_character_faces.ps1
+            -Destination ${CMAKE_CURRENT_SOURCE_DIR}/plugin/mmd/character-faces
+    VERBATIM)
   add_custom_command(TARGET poser POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/plugin
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

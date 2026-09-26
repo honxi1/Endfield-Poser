@@ -160,6 +160,15 @@ if errorlevel 1 (
     echo [错误] 复制 poser.dll 失败！
     goto error_exit
 )
+REM Install bundled expression calibrations; keep unrelated custom profiles.
+if exist "%~dp0plugin\mmd\character-faces\*.face.json" (
+    if not exist "%TARGET_DIR%\plugin\mmd\character-faces" mkdir "%TARGET_DIR%\plugin\mmd\character-faces" >nul 2>&1
+    copy /Y "%~dp0plugin\mmd\character-faces\*.face.json" "%TARGET_DIR%\plugin\mmd\character-faces\" >nul
+    if errorlevel 1 (
+        echo [Error] Failed to copy character expression profiles.
+        goto error_exit
+    )
+)
 if not exist "%TARGET_DIR%\plugin\poser_config.txt" (
     copy /Y "%~dp0plugin\poser_config.txt" "%TARGET_DIR%\plugin\" >nul
     echo  - 已复制 poser.dll 与默认 poser_config.txt

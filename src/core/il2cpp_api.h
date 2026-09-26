@@ -48,6 +48,8 @@ D(void *, il2cpp_array_new, void *, size_t);
 D(uint32_t, il2cpp_gchandle_new, void *, bool);
 D(void *, il2cpp_gchandle_get_target, uint32_t);
 D(void, il2cpp_gchandle_free, uint32_t);
+D(int32_t, il2cpp_class_value_size, void *, uint32_t *);
+D(uint32_t, il2cpp_method_get_flags, void *, uint32_t *);
 #undef D
 
 static HMODULE hGA = nullptr;
@@ -137,6 +139,8 @@ static bool Resolve() {
   R(il2cpp_gchandle_new);
   R(il2cpp_gchandle_get_target);
   R(il2cpp_gchandle_free);
+  R(il2cpp_class_value_size);
+  R(il2cpp_method_get_flags);
 #undef R
   return il2cpp_domain_get && il2cpp_class_get_methods &&
          il2cpp_method_get_name;

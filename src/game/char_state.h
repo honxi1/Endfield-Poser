@@ -34,7 +34,7 @@ static void ReadAnimatorGoName(char *buf, int sz) {
     void *go = Invoke(g_component_get_gameObject, g_charAnimator);
     void *ns = go ? Invoke(g_object_get_name, go) : nullptr;
     if (ns)
-      ReadStr(ns, buf, sizeof(buf));
+      ReadStr(ns, buf, sz);
   } __except (1) {
   }
 }

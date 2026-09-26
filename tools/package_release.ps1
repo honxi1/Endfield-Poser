@@ -124,6 +124,7 @@ Copy-Item -LiteralPath $configSrc                              -Destination (Joi
 Copy-Item -LiteralPath (Join-Path $root 'plugin\poser.dll')            -Destination (Join-Path $stage 'plugin\poser.dll') -Force
 Copy-Item -LiteralPath (Join-Path $root 'plugin\d3dcompiler_47.dll')   -Destination (Join-Path $stage 'd3dcompiler_47.dll') -Force
 Copy-Item -LiteralPath (Join-Path $root 'plugin\vulkan-1.dll')         -Destination (Join-Path $stage 'vulkan-1.dll') -Force
+& (Join-Path $PSScriptRoot 'copy_character_faces.ps1') -Destination (Join-Path $stage 'plugin\mmd\character-faces')
 
 # --- 发版前署名自查 ---
 $names = @()

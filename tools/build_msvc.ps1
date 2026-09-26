@@ -73,7 +73,7 @@ New-Item -ItemType Directory -Force -Path 'build\obj' | Out-Null
 $sdkIncFlags = ($sdkInc | ForEach-Object { "/I $_" }) -join ' '
 $sdkLibFlags = "/LIBPATH:$sdkLibDirUm /LIBPATH:$sdkLibDirUcrt"
 
-$common = "/nologo /std:c++17 /O2 /MD /EHa /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS $sdkIncFlags"
+$common = "/nologo /std:c++17 /O2 /MD /EHa /utf-8 /Fo:build\obj\ /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DIMGUI_DEFINE_MATH_OPERATORS /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR $sdkIncFlags"
 $inc    = '/I deps /I deps\imgui /I deps\imguizmo /I deps\minhook_lib\include /I deps\json /I src'
 
 function Invoke-Cl([string]$CompileArgs) {
@@ -164,3 +164,5 @@ Write-Host 'Deploy:'
 Write-Host '  copy plugin\d3dcompiler_47.dll -> game dir   (overwrites the game'"'"'s own)'
 Write-Host '  copy plugin\vulkan-1.dll         -> game dir   (only if game runs Vulkan; can place both)'
 Write-Host '  copy plugin\poser.dll          -> game dir\plugin\'
+
+& (Join-Path $PSScriptRoot "copy_character_faces.ps1") -Destination (Join-Path $root "plugin\mmd\character-faces")
