@@ -124,6 +124,10 @@ if(WIN32)
     src/core/user_agreement.h src/editor/panel_agreement.h
     src/math/mmd_motion.h src/math/mmd_rig.h src/math/mmd_retarget.h src/math/mmd_props.h src/math/mmd_adaptation.h src/math/mmd_amplitude.h src/math/mmd_arm_twist.h
     src/game/mmd_player.h src/game/mmd_io.h src/game/frozen_grip.h src/editor/panel_mmd.h src/editor/panel_mmd_adaptation.h
+    src/game/mmd_secondary_motion.h src/math/mmd_secondary_motion.h src/integrations/sbm_mmd_api.h
+    src/math/secondary_body_motion.h src/game/secondary_body_runtime.h src/game/secondary_body_settings.h src/integrations/secondary_bone_profiles.h
+    src/cloth/native/cloth_turn_runtime.h src/math/cloth_turn_motion.h
+    src/editor/panel_mmd_face_bindings.h src/math/mmd_face_bindings.h
     src/core/game_hooks.h
     src/core/gui_overlay.h src/core/build_features.h
     src/core/frame_driver.h src/math/frame_cadence.h

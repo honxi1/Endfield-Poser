@@ -44,5 +44,12 @@ Endfield Poser —— 第三方来源与许可声明
    其中 imgui 与 MinHook 的源码/静态库取自上述上游仓库中的同版本副本（许可同上）。
    各依赖的许可全文见 `deps/<name>/LICENSE*` 与 `licenses/`；发布包保留这些许可。
 
+4) 第二骨骼物理的角色骨骼表（GPL-3.0）
+   https://github.com/Sp1cHless/Arknights-Endfield-Plugin-Secondary-bodyphysics
+
+   内置角色骨骼名称与候选表参考该项目；来源、改动说明及许可全文见
+   `licenses/secondary-bodyphysics.txt`。可选外置协作构建的说明与补丁材料见
+   `integrations/sbm/`；内置物理增强无需另外安装该工具。
+
 ——
 完整免责声明、内容合规与行为约束见仓库 README.md。
